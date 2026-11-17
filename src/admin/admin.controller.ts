@@ -40,7 +40,7 @@ export class AdminController {
 
   @Post('roles')
   createRole(@Body() dto: CreateRoleDto) {
-    return this.adminService.createRole(dto.name);
+    return this.adminService.createRole(dto.name, dto.permissions ?? []);
   }
 
   @Put('roles/:id/permissions')
@@ -65,5 +65,10 @@ export class AdminController {
   @Delete('users/:id/role')
   revokeRole(@Param('id') id: string, @Req() req: any) {
     return this.adminService.revokeRole(id, req.user.id);
+  }
+
+  @Delete('users/:id')
+  deleteUser(@Param('id') id: string, @Req() req: any) {
+    return this.adminService.deleteUser(id, req.user.id);
   }
 }
