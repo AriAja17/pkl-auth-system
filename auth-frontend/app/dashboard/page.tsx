@@ -96,6 +96,12 @@ export default function DashboardPage() {
             Buka halaman admin
           </Link>
         )}
+
+        {me.permissions.includes('article.read') && (
+        <Link href="/articles" className="inline-block text-blue-600 underline">
+          Buka halaman artikel
+        </Link>
+      )}
       </div>
     </main>
   );
