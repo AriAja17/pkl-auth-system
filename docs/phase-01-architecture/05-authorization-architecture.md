@@ -18,6 +18,8 @@
 | `PermissionsGuard` | Existing, dipakai ulang | Membaca `@RequirePermissions` dan bertanya ke `AuthorizationService`. |
 | `@RequirePermissions` / `@RequireAnyPermissions` | Existing / **baru** | ALL-of / ANY-of di handler. |
 | `AuditService` | **Baru** | Meredaksi payload lalu menulis `AuditLog` dalam transaksi. |
+| `ThrottlerModule` / `ThrottlerGuard` | **Baru** | Rate limit hanya untuk `POST /auth/login` (in-memory per process). |
+| `ScheduleModule` / `AuditRetentionService` | **Baru** | Scheduler harian 02:00 WIB untuk retention `AuditLog`. |
 
 `@RequirePermissions` tetap ALL-of agar perilaku existing tidak berubah.
 
@@ -39,16 +41,17 @@ sequenceDiagram
     P->>A: can(principal, required, mode)
     A-->>P: true / ForbiddenException
     P->>S: lanjut
-    S->>A: assertCanManage(principal, action, resource)
-    A-->>S: true / ForbiddenException
     S->>AuditService: redact + write (transaksi sama)
 ```
+
+`PermissionsGuard` adalah satu-satunya pemeriksa akses pada alur request di atas: ia memanggil `AuthorizationService.can(principal, required, mode)`. `assertCanManage()` **bukan** pemanggilan runtime oleh setiap service; ia hanya helper opsional untuk pemeriksaan berbasis policy registry. Konsistensi route terhadap policy registry diperiksa **sekali saat startup** oleh `assertRoutePolicyConsistency()` di `main.ts`, bukan pada setiap request.
 
 ```ts
 type Principal = {
   id: string;
   email: string;
   username: string;
+  isActive: boolean;
   roles: { id: string; name: string; isSystem: boolean }[];
   permissions: Set<string>;   // union dari semua RolePermission
   capabilities: Set<string>;  // hanya yang belum expired
@@ -63,13 +66,18 @@ resolvePrincipal(userId):
   user = findUnique(id, include: roles.role.permissions.permission, capabilities.permission)
   if !user || !user.isActive -> UnauthorizedException
   permissions = union(r.permissions.map(p => p.permission.key) for r in user.roles)
-  capabilities = union(c.permission.key for c in user.capabilities where c.expiresAt > now())
+  allCaps     = findMany(select: id, permissionId, parentCapabilityId, expiresAt)
+  capabilities = union(c.permission.key for c in user.capabilities
+                       where lineageValid(c, allCaps, now))
+  // lineageValid: c.expiresAt > now, setiap ancestor ada & expiresAt > now,
+  // permission child == permission parent, dan tidak ada siklus.
   isSystem     = user.roles.some(r => r.role.isSystem)
   return { ..., permissions, capabilities, isSystem }
 ```
 
 - User tanpa role → `permissions = ∅` → semua endpoint terproteksi ditolak.
 - Tidak ada prioritas role; role yang dicabut langsung hilang pada request berikutnya.
+- Capability yang ancestor-nya expired, hilang, atau permission-nya berbeda dianggap tidak berlaku (fail closed) meski barisnya masih ada.
 
 ## 5. Permission key & legacy alias
 
@@ -83,11 +91,11 @@ resolvePrincipal(userId):
 | `article.delete` | `delete:article` |
 | `user.manage` | `manage:user` |
 
-Permission baru mengikuti konvensi yang sama: `view:menu`, `create:user`, `update:role`, `read:audit`, `grant:admin`.
+Permission baru mengikuti konvensi yang sama: `read:menu`, `create:user`, `update:role`, `read:audit`, `grant:admin`.
 
 **Penugasan otomatis:** `POST /admin/permissions` harus, **dalam satu transaksi**, membuat baris `Permission` **dan** menambahkannya ke role `superadmin` lewat `RolePermission`. Ini adalah satu-satunya jalur API yang boleh menambah permission ke role sistem. Endpoint API lain tidak boleh menghapus atau mengubah permission yang melekat pada role sistem (§7.1); `DELETE /admin/permissions/:id` ditolak jika permission masih dipakai, termasuk oleh `superadmin`.
 
-**Legacy aggregate:** `manage:user` tetap di-perlakukan sebagai alias agregat untuk seluruh aksi administrasi di `AuthorizationService` selama transisi. Aturan ini hanya di kode, bukan baris DB tambahan. **Alias ini tidak boleh dijadikan dasar pemberian delegasi** (aturan 2 di §7.2).
+**Status implementasi `manage:user`:** key ini adalah permission kanonik **mandiri** yang dipakai hanya oleh endpoint legacy `PUT/DELETE /admin/users/:id/role`. Ia **bukan** alias agregat untuk endpoint granular — endpoint lain memakai `read:user`, `create:user`, `update:user`, dst. `AuthorizationService.can()` tidak melakukan perluasan alias. Key ini juga tidak boleh dijadikan dasar pemberian delegasi (aturan 2 di §7.2).
 
 Mode pemeriksaan:
 | Mode | Semantics | Pemakaian |
@@ -101,18 +109,19 @@ Mode pemeriksaan:
 visibleMenus(principal):
   aktif = Menu.where(isActive = true).include(permissions)
   visible = aktif.filter(m =>
-      m.permissions.length === 0 ?
-        true :                                   // menu publik untuk user terautentikasi
-        m.permissions.some(p => principal.permissions.has(p.key))   // ANY-of (O1)
+      m.permissions.length > 0 &&
+      m.permissions.some(p => principal.permissions.has(p.key))   // ANY-of
   )
   tree = buildTree(visible)                    // urut by order, lalu name
   // anak dari parent yang tidak visible ikut disembunyikan
   return tree
 ```
 
-Dikirim lewat `GET /auth/me` sebagai `menus`. Frontend dilarang menganggap penyembunyian menu sebagai proteksi.
+**Perilaku aktual (F-02):** menu **tanpa** permission mapping ikut disembunyikan. Ini berbeda dengan rancangan awal yang menampilkan menu tanpa mapping sebagai "menu publik"; keputusan implementasi diikuti agar dokumentasi sesuai kode. Submenu dari parent yang tersembunyi juga tidak dikirim.
 
-**Siklus `Menu.parentId` dilarang keras.** Service wajib memvalidasi graph saat create/update dan menolak (`400`) jika menu menjadi induk dari induknya sendiri, langsung maupun transitif. `onDelete: SetNull` hanya mengatasi hapus parent, bukan siklus.
+Dikirim lewat `GET /auth/me` sebagai `menus` (node tree berisi `id`, `name`, `url`, `icon`, `parentId`, `order`, `description`, `children`). Ini berbeda dengan `GET /admin/menus` yang mengembalikan tree pengelolaan lengkap dengan `isActive`, `permissions`, `createdAt`, dan `updatedAt` (F-08). Frontend dilarang menganggap penyembunyian menu sebagai proteksi endpoint.
+
+**Siklus `Menu.parentId` dilarang keras.** Pemeriksaan siklus graph dilakukan **saat update** (termasuk perubahan `parentId`) dan menolak (`400`) jika menu menjadi induk dari induknya sendiri, langsung maupun transitif. Saat **create**, service hanya memvalidasi bahwa `parentId` yang diberikan menunjuk ke menu yang ada; menu baru belum memiliki anak sehingga tidak bisa membentuk siklus. `onDelete: SetNull` hanya mengatasi hapus parent, bukan siklus.
 
 ## 7. Delegated administration
 
@@ -148,18 +157,19 @@ Skrip recovery bukan fitur Phase 02; Phase 01 hanya mendokumentasikan prosedurny
 7. Actor tidak boleh mengubah/menghapus/memberi capability kepada **dirinya sendiri** atau **grantor-nya**.
 8. Graf delegasi harus **asiklik**, langsung maupun transitif.
 9. Capability baru grantee ⊆ capability actor (batas transitif), dan `parentCapabilityId`-nya wajib menunjuk ke capability sumber yang masih berlaku milik actor (atau `null` hanya untuk root dari `superadmin`).
-10. **Invalidasi rantai via lineage**: capability grantor yang dicabut/expired → seluruh descendant ikut dicabut. Penelusuran & mekanismenya di §7.3.
+10. **Invalidasi rantai via lineage**: ancestor yang **dicabut** (`DELETE`) → descendant ikut **terhapus** oleh cascade FK. Ancestor yang **expired atau induknya tidak ditemukan** → descendant **tidak dihapus**, tetapi langsung dianggap tidak berlaku (fail closed). Penelusuran & mekanismenya di §7.3.
 11. `expiresAt` **wajib** di masa depan, maks. **90 hari**, tanpa pengecualian.
 12. Setiap create/revoke delegasi ditulis ke `AuditLog` dalam transaksi yang sama.
-13. Jika ada pemeriksaan gagal → `403 Forbidden`, tanpa perubahan sebagian.
+13. Status error: pelanggaran kewenangan/self/superadmin/siklus/protected → `403 Forbidden`; input tidak valid (`expiresAt` lampau atau > 90 hari, format/ID/key tidak dikenal, `permissionKeys` kosong) → `400 Bad Request`; duplikasi capability `[userId, permissionId]` → `409 Conflict`. Semua kegagalan terjadi tanpa perubahan sebagian.
 
 Contoh: admin `finance` memiliki `create:user` + capability `create:user` → ia boleh membuat user, tetapi tidak boleh memberi `delete:role`, menyentuh `superadmin`, mengubah role sendiri, mendelegasikan `grant:admin`, atau membuat delegasi > 90 hari.
 
 ### 7.3 Penelusuran & invalidasi lineage
 
 - Setiap `AdminCapability` menyimpan **`parentCapabilityId`** (self-FK ke capability sumber). `null` = **root**, diberikan langsung oleh `superadmin`.
-- **Trace:** `AuthorizationService` menaikkan rantai `capability → parentCapability → … → root`. Jika **ada** ancestor yang `expiresAt <= now()`, sudah dicabut, atau melanggar aturan subset, maka seluruh capability di bawahnya dianggap **tidak berlaku** (fail closed) walaupun barisnya masih ada.
-- **Invalidasi dua lapis:** (1) `DELETE /admin/delegations/:id` pada ancestor dan penghapusan baris expired oleh job cleanup menghapus ancestor; karena self-FK memakai `onDelete: Cascade`, descendant ikut terhapus. (2) Pengecekan rantai di `resolvePrincipal` segera menonaktifkan descendant sebelum job cleanup berjalan.
+- **Trace:** `AuthorizationService` menaikkan rantai `capability → parentCapability → … → root`. Jika **ada** ancestor yang `expiresAt <= now()`, ancestor tidak ditemukan (induk tidak ada lagi karena dicabut), `permissionId` child berbeda dari parent, atau rantai membentuk siklus, maka capability tersebut dianggap **tidak berlaku** (fail closed) walaupun barisnya masih ada.
+- **Invalidasi dua lapis (status aktual):** (1) `DELETE /admin/delegations/:id` pada ancestor menghapus ancestor; karena self-FK memakai `onDelete: Cascade`, descendant ikut terhapus. (2) Pengecekan rantai di `resolvePrincipal` dan `DelegationService` segera menonaktifkan descendant yang ancestor-nya expired, tidak ditemukan, atau melanggar aturan subset.
+- **Tidak ada job cleanup capability expired.** Baris expired/invalid tetap tersimpan sampai dicabut atau diganti. Saat re-grant, baris yang tidak valid dihapus dan diganti dalam satu transaksi beserta catatan auditnya. Scheduler yang ada hanya untuk retention `AuditLog`, bukan untuk `AdminCapability`.
 - **Siklus dilarang:** `parentCapabilityId` tidak boleh membentuk rantai melingkar; create delegasi menolak (`403`) jika grantee adalah ancestor dari actor, langsung maupun transitif (aturan 8).
 - Audit create/revoke mencatat `parentCapabilityId`, grantor, grantee, dan `invalidatedDescendantIds` (daftar descendant yang terkena invalidasi).
 
@@ -169,18 +179,21 @@ Contoh: admin `finance` memiliki `create:user` + capability `create:user` → ia
 // contoh — key format action:resource
 export const POLICIES = {
   'GET /admin/users': { permission: 'read:user', mode: 'all' },
-  'POST /admin/roles': { permission: 'create:role', mode: 'all' },
+  'POST /admin/users': { permission: 'create:user', mode: 'all' },
+  'GET /admin/menus': { permission: 'read:menu', mode: 'all' },
+  'POST /admin/delegations': { permission: 'create:delegation', mode: 'all' },
+  'GET /admin/audit-logs': { permission: 'read:audit', mode: 'all' },
   'GET /articles': { permission: 'read:article', mode: 'all' },
 } as const;
 ```
 
 `GET /admin/permissions/drift` mengembalikan `orphan` (permission tanpa endpoint) dan `unregistered` (endpoint tanpa permission di DB). Endpoint ini **hanya melapor**, tidak membuat endpoint/permission.
 
-**Setiap endpoint terproteksi wajib terdaftar di policy registry.** Tidak boleh ada `@RequirePermissions` / `@RequireAnyPermissions` yang tidak punya entri `POLICIES`. Temuan `unregistered` diperlakukan sebagai **pelanggaran** yang harus dibereskan sebelum deploy, bukan sekadar informasi. Permission `orphan` boleh ada sebagai metadata, tetapi tidak boleh dianggap sebagai endpoint aktif.
+**Setiap endpoint terproteksi wajib terdaftar di policy registry.** Tidak boleh ada `@RequirePermissions` / `@RequireAnyPermissions` yang tidak punya entri `POLICIES`. Temuan `unregistered` diperlakukan sebagai **pelanggaran** yang harus dibereskan sebelum deploy, bukan sekadar informasi. Seluruh endpoint admin/articles yang tersedia saat ini sudah terdaftar; tidak ada endpoint aktif yang masih berstatus *Planned* atau `unregistered`. Permission `orphan` boleh ada sebagai metadata, tetapi tidak boleh dianggap sebagai endpoint aktif. Endpoint tanpa permission khusus (mis. `/auth/login`, `/auth/me`, `/`) dikecualikan sebagai `TOKEN_ONLY_ROUTES`.
 
 ## 9. Audit
 
-Aksi wajib tercatat: CRUD user/role/permission/menu, assign/revoke role, set permission, create/revoke delegation, login (disarankan). Retention **365 hari** dan **redaction whitelist** di dokumen 07 §5; `before/after` tidak pernah berisi password/token.
+Aksi wajib tercatat: CRUD user/role/permission/menu, assign/revoke role, set permission, create/revoke delegation. Login belum dicatat. Retention **365 hari** (default, `AUDIT_RETENTION_DAYS`) dijalankan `AuditRetentionService` setiap hari 02:00 WIB dengan batch maksimal 1000 ID; **redaction whitelist** di dokumen 07 §5. `before/after` tidak pernah berisi password/token, dan cleanup sengaja tidak menulis Audit Log agar tidak terjadi rekursi.
 
 **Pembeda nama yang wajib dijaga:** permission key memakai **`action:resource`** (mis. `create:user`, `read:article`), sedangkan **`AuditLog.action` memakai `resource.action`** (mis. `user.create`, `role.permissions.update`). Keduanya bukan hal yang sama dan tidak boleh disamakan atau dipakai bergantian; `AuditLog.action` **bukan** permission key.
 
@@ -190,5 +203,5 @@ Tidak ada cache permission di Phase 02 — database dibaca per request agar penc
 
 ## 11. Open items
 
-- **O1** ANY-of vs ALL-of untuk menu (default ANY-of).
-- **O4** Daftar permission ERP mentor belum tersedia; policy registry diperluas setelah daftar resmi diterima.
+- **O1** — Selesai di implementasi: menu memakai ANY-of dan menu tanpa permission disembunyikan (lihat §6).
+- **O4** — Daftar permission ERP mentor belum tersedia; policy registry diperluas setelah daftar resmi diterima.

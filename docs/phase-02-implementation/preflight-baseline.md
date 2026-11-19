@@ -1,5 +1,7 @@
 # Phase 02 — Preflight Permission Baseline
 
+> Catatan: ini baseline read-only pada 2026-11-18, bukan kondisi database saat ini. Lihat README dan dokumen 07 untuk status implementasi terkini.
+
 **Captured:** 2026-11-18T13:28:25+07:00
 **Scope:** read-only preflight (M0). No migration, seed, generate, or database write was performed.
 **Source:** local working tree + read-only queries against the configured Supabase PostgreSQL database.

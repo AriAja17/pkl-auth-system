@@ -130,7 +130,7 @@ Berikan seluruh permission kepada `superadmin`. Penambahan key baru hanya pada r
 - `AuthorizationService`, guards, endpoint baru.
 - **Semua deklarasi guard** diganti ke key baru: `article.read` → `read:article`, `user.manage` → `manage:user`, dll.
 - **`RegisterDto` @MinLength(8) → 6** (D5).
-- `AdminCapability` dibuat dengan self-FK `parentCapabilityId` (`onDelete: Cascade`) untuk lineage; job cleanup capability expired ikut menghapus descendant.
+- `AdminCapability` dibuat dengan self-FK `parentCapabilityId` (`onDelete: Cascade`) untuk lineage. **Catatan implementasi:** tidak ada job cleanup capability expired; yang ada adalah pengecekan fail-closed di `resolvePrincipal`/`DelegationService` dan penggantian baris invalid saat re-grant. Scheduler yang tersedia hanya untuk retention `AuditLog`.
 - `ValidationPipe({ whitelist: true, transform: true })` — `forbidNonWhitelisted` **tidak** diaktifkan.
 - **Semua endpoint terproteksi** terdaftar di policy registry; tidak ada deklarasi guard di luar registry.
 - `POST /admin/permissions` menambahkan permission baru ke `superadmin` dalam satu transaksi.
@@ -183,23 +183,23 @@ Duplikat local-part → `sales`, `sales_1`, `sales_2`, sesuai urutan `id`.
 | Risiko | Sumber | Mitigasi |
 |---|---|---|
 | XSS token `localStorage` | Existing | O3. |
-| Brute force login | Existing | `@nestjs/throttler` lanjutan. |
+| Brute force login | Existing | `@nestjs/throttler` 6.x: 10 request/IP/15 menit pada `POST /auth/login`, storage in-memory per process (tidak melindungi antar-instance). |
 | Validasi longgar | Existing | **Selaraskan** ke `ValidationPipe({ whitelist: true, transform: true })`; `forbidNonWhitelisted` sengaja **off** (field asing dibuang). Identik di doc 02 & 06. |
 | Konstanta hardcoded diduplikasi | Existing | `isSystem`/`isProtected` + konstanta pusat. |
 | Username case-sensitive duplikat | Target | `citext` + unique + lowercase + backfill deterministik. |
 | Username > 30 / karakter aneh | Target | Regex `[a-z0-9_]{3,30}`. |
 | **Rename key merusak guard** | Target (D1) | Mapping eksplisit + deploy kode rilis sama + fail closed + verifikasi §2. |
-| **Password 6 lebih lemah dari 8** | Target (D5) | Requirement mentor eksplisit; mitigasi: rate limit login, bcrypt salt 10, audit login. |
+| **Password 6 lebih lemah dari 8** | Target (D5) | Requirement mentor eksplisit; mitigasi: rate limit login dan bcrypt salt 10. Login **belum** dicatat ke AuditLog. |
 | Hapus `Permission` cascade | Existing/target | Tolak `409` jika dipakai + audit. |
 | Eskalasi rantai capability | Target | 13 aturan dokumen 05 §7.2 + lineage §7.3 (`parentCapabilityId`, trace ancestor, cascade invalidasi). |
-| Ancestor expired tapi baris belum dihapus job | Target | `resolvePrincipal` menolak descendant jika ada ancestor `expiresAt <= now()` (fail closed) sebelum cleanup. |
+| Ancestor expired tapi baris belum dihapus | Target | `resolvePrincipal` menolak descendant jika ada ancestor `expiresAt <= now()` (fail closed). Tidak ada job cleanup; baris invalid diganti saat re-grant. |
 | Eskalasi via role tambahan | Target | Aturan 5: permission role ⊆ capability. |
 | Self-escalasi role sendiri | Target | Aturan 6. |
 | PII/secret di audit | Target | Redaction whitelist + retention (§5). |
 
 ## 5. AuditLog — retention & redaction
 
-**Retention:** default **365 hari** (`AUDIT_RETENTION_DAYS`), job harian batch 1000 idempoten; baris > 365 hari dihapus. Penghapusan job tidak ditulis ke audit (rekursi), cukup log aplikasi. `actorEmail` snapshot tetap penuh.
+**Retention:** default **365 hari** (`AUDIT_RETENTION_DAYS`, integer positif). `AuditRetentionService` berjalan tiap hari pukul **02:00 WIB** (`Asia/Jakarta`, `waitForCompletion: true`), mengambil maksimal 1000 ID per batch dengan urutan `createdAt asc, id asc`, lalu `deleteMany` per ID sampai tidak ada baris lama. Baris dengan `createdAt < cutoff` dihapus. Proses idempoten; cleanup **tidak** memanggil `AuditService.record()` (mencegah rekursi) dan hasilnya hanya dicatat lewat `Logger`. `actorEmail` snapshot tetap penuh. Catatan multi-instance: setiap instance menjalankan scheduler sendiri; `waitForCompletion` hanya mencegah overlap dalam satu process. Penghapusan berdasarkan ID bersifat idempoten, sehingga aman jika dua instance memilih baris yang sama, tetapi perlu koordinasi jika diinginkan satu eksekusi global.
 
 **Redaction whitelist** (`AuditService.redact`):
 
@@ -210,6 +210,8 @@ Duplikat local-part → `sales`, `sales_1`, `sales_2`, sesuai urutan `id`.
 | `permission` | `id`, `key`, `description`, `isProtected` |
 | `menu` | `id`, `name`, `url`, `icon`, `parentId`, `order`, `isActive`, `permissionIds` |
 | `delegation` | `id`, `granteeId`, `permissionKey`, `grantedBy`, `parentCapabilityId`, `invalidatedDescendantIds`, `expiresAt` |
+
+Whitelist aktual di `audit-redaction.ts`: tabel `role` juga memperbolehkan `isSystem`. Field `description` pada resource `menu` dan `replacedBy` pada `delegation` sengaja tidak masuk whitelist, sehingga dibuang saat ditulis walaupun ada di snapshot service.
 
 - Dilarang: `password`, `passwordHash`, `accessToken`, `refreshToken`, `jwt`, `secret`, `otp`, token reset.
 - `phone` → `****1234`; `email` di `before/after` → `s***@example.com`; `actorEmail` tetap penuh.
@@ -228,10 +230,10 @@ Duplikat local-part → `sales`, `sales_1`, `sales_2`, sesuai urutan `id`.
 
 | Entity | Aturan |
 |---|---|
-| `User` | Email unik; `username` `[a-z0-9_]{3,30}` unik case-insensitive; **password min 6**; `roleIds[]` ada & bukan `isSystem`; tidak bisa mengubah diri sendiri. |
-| `Role` | `name` unik; tidak bisa pakai `superadmin`; role sistem immutable di 3 ranah; `permissionKeys[]` ada **dan** (actor non-superadmin) ⊆ capability actor **saat create**, bukan hanya saat set permission. |
+| `User` | Email unik (duplikat → `409` pada register maupun `POST /admin/users`); `username` `[a-z0-9_]{3,30}` unik case-insensitive; **password min 6**; `roleIds[]` opsional & bukan `isSystem`; tidak bisa mengubah/menghapus diri sendiri. |
+| `Role` | `name` unik; tidak bisa pakai `superadmin`; role sistem immutable di 3 ranah; `permissionKeys?[]` **opsional** pada create; jika diberikan, (actor non-superadmin) ⊆ capability actor **saat create**, bukan hanya saat set permission. |
 | `Permission` | `key` `^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$` & unik; `isProtected` hanya oleh `superadmin`; `POST` transaksional menambahkan ke `superadmin`; `PATCH/DELETE` tidak boleh menyentuh permission role sistem. |
-| `Menu` | `url` diawali `/`; `icon` PrimeIcons; **siklus `parentId` dilarang keras** (validasi graph, langsung/transitif); `permissionIds[]` ada. |
+| `Menu` | `url` diawali `/`; `icon` PrimeIcons; **siklus `parentId` dilarang keras** (validasi graph saat update, langsung/transitif; create hanya memastikan parent ada); `permissionIds?[]` opsional saat create, **wajib** pada `PUT /admin/menus/:id/permissions`. |
 | `AdminCapability` | ≠ actor/grantor; `grant:admin` non-delegable; `create:delegation` satu level; subset capability; role target ⊆ capability; asiklik; `parentCapabilityId` menunjuk sumber valid (root `null` hanya untuk `superadmin`); `expiresAt` > now ≤ 90 hari; ancestor expired/cabut → descendant invalid. |
 | `AuditLog` | Transaksional; `actorEmail` wajib; payload diredaksi; retention 365 hari. |
 
@@ -244,7 +246,7 @@ Validasi global: **`ValidationPipe({ whitelist: true, transform: true })`**, `fo
 | 1 | Register password 5 karakter | 400 (min 6) |
 | 2 | Register password 6 karakter | 201 |
 | 3 | Register tanpa username | 201, username deterministik |
-| 4 | `Admin` ada, daftar `admin` | 409 case-insensitive |
+| 4 | Username `admin` sudah ada, daftar `ADMIN` | 409 case-insensitive |
 | 5 | Username 31 karakter | 400 |
 | 6 | Backfill username diulang | Identik |
 | 7 | `/auth/me` | Key `action:resource` (`manage:user`, `read:article`) |
@@ -265,7 +267,7 @@ Validasi global: **`ValidationPipe({ whitelist: true, transform: true })`**, `fo
 | 22 | Grantor dicabut → turunan hilang | Tidak berlaku |
 | 23 | Delegate `grant:admin` / lanjutkan `create:delegation` | 403 |
 | 24 | `expiresAt` 91 hari / lampau | 400 |
-| 25 | Menu tanpa permission | Muncul |
+| 25 | Menu tanpa permission | Tersembunyi (perilaku aktual F-02) |
 | 26 | Menu 2 permission, user punya 1 | Muncul (ANY-of) |
 | 27 | Parent tak memenuhi syarat | Anak tersembunyi |
 | 28 | Permission baru tak dipakai endpoint | `drift.orphan`, tanpa endpoint |
@@ -273,7 +275,7 @@ Validasi global: **`ValidationPipe({ whitelist: true, transform: true })`**, `fo
 | 30 | Aksi admin sukses | Audit whitelist benar |
 | 31 | Payload ada password/token | Tidak tersimpan |
 | 32 | Phone/email audit | `****1234` / `s***@example.com` |
-| 33 | Audit > 365 hari | Dihapus job |
+| 33 | Audit > 365 hari | Dihapus scheduler harian 02:00 WIB, batch 1000 |
 | 34 | Transaksi gagal | Mutasi + audit rollback |
 | 35 | Backfill | `UserRole` benar, username valid |
 | 36 | **Mapping key** | 5 key lama → 5 key baru; assignment identik; tidak ada key `%.%` |
@@ -284,7 +286,7 @@ Validasi global: **`ValidationPipe({ whitelist: true, transform: true })`**, `fo
 | 41 | `PATCH/DELETE` permission yang melekat di `superadmin` | Ditolak (`403`/`409`); permission tidak hilang |
 | 42 | `POST /admin/roles` dengan `permissionKeys[]` di luar capability | `403` **saat create** |
 | 43 | `POST /admin/delegations` | `parentCapabilityId` diisi server-side; root `null` hanya untuk grant `superadmin` |
-| 44 | Cabut capability ancestor / ancestor expired | Descendant tidak berlaku langsung & ikut terhapus (cascade + chain check) |
+| 44 | Cabut capability ancestor / ancestor expired | Cabut → descendant ikut terhapus (cascade). Expired → descendant langsung tidak valid (chain check), baris lama diganti saat re-grant |
 | 45 | Endpoint terproteksi tanpa entri policy registry | Tidak boleh di-deploy; `drift.unregistered` dilaporkan sebagai pelanggaran |
 | 46 | `Menu.parentId` membentuk siklus | `400`, tidak tersimpan |
 
@@ -300,6 +302,15 @@ Validasi global: **`ValidationPipe({ whitelist: true, transform: true })`**, `fo
 - ✅ `POST /admin/permissions` transaksional menambah ke `superadmin`; permission sistem tidak bisa diubah/dihapus via API.
 - ✅ Validasi global `whitelist + transform` konsisten di doc 02/06/07; siklus Menu dilarang; policy registry wajib untuk semua endpoint terproteksi.
 - ✅ Audit: retention 365 hari + redaction whitelist; `action:resource` (permission) dibedakan dari `resource.action` (AuditLog.action).
-- ✅ Preservasi permission & Article diverifikasi (§2, test 36–37).
+- ⏹ Preservasi permission & Article: **prosedur dan kriteria verifikasinya sudah didefinisikan** (§2, test 36–37), tetapi **belum dieksekusi** pada lingkungan uji.
 - ✅ Tidak ada source/schema/migrasi/dependency/Supabase yang diubah.
 - ⏹ Menunggu approval Phase 02.
+
+## 10. Status pengujian implementasi (Batch 06)
+
+- ✅ Backend unit test: **122/122** lulus (13 suite); `AdminService` **29/29**.
+- ✅ TypeScript `npx tsc --noEmit -p tsconfig.json`: lulus.
+- ✅ Build backend `npm run build`: lulus.
+- ✅ Frontend `npm run lint` dan `npm run build` (produksi): lulus.
+- ⚠️ Lint backend **belum bersih**: error lama `src/main.ts:13` (`no-floating-promises`) dan warning `unbound-method` pada spec lama.
+- ⛔ Belum dijalankan: test e2e, integrasi runtime dengan Supabase, migrasi/seed pada lingkungan uji, dan pengujian multi-instance (rate limiting serta retention). Klaim keberhasilan tidak dibuat untuk pemeriksaan ini.

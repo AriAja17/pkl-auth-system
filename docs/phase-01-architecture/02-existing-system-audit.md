@@ -1,5 +1,7 @@
 # Phase 01 — Existing System Audit (final revision)
 
+> Catatan: dokumen ini adalah snapshot audit sistem **sebelum** Phase 02/03. Untuk perilaku yang benar-benar berjalan saat ini, rujuk README, dokumen 05–07, dan source code.
+
 Audit terhadap **working tree lokal**. GitHub remote tidak dipakai (tertinggal).
 
 ## 1. Stack yang berjalan
