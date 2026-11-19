@@ -261,6 +261,9 @@ export class AdminService {
     if (dto.password.length < 6) {
       throw new BadRequestException('Password minimal 6 karakter');
     }
+    if (await this.prisma.user.findUnique({ where: { email: dto.email } })) {
+      throw new ConflictException('Email sudah terdaftar');
+    }
     const used = new Set(
       (await this.prisma.user.findMany({ select: { username: true } }))
         .map((u) => u.username?.toLowerCase())

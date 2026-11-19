@@ -131,6 +131,18 @@ describe('AdminService — user & role management', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
+  it('rejects a duplicate email with the same conflict response as register', async () => {
+    prisma.user.findUnique.mockResolvedValue(userRow({ email: 'taken@example.com' }));
+
+    const attempt = service.createUser(
+      { email: 'taken@example.com', password: 'secret123', username: 'newuser' },
+      actor(),
+    );
+    await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+    await expect(attempt).rejects.toThrow('Email sudah terdaftar');
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
   it('returns paginated sanitized user listings', async () => {
     prisma.user.findMany.mockResolvedValue([userRow()]);
     prisma.user.count.mockResolvedValue(1);
