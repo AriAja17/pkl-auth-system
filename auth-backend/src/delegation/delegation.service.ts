@@ -18,6 +18,7 @@ type CapabilityRow = {
   id: string;
   userId: string;
   grantedBy: string;
+  permissionId: string;
   parentCapabilityId: string | null;
   expiresAt: Date;
   grantedAt: Date;
@@ -50,7 +51,9 @@ export class DelegationService {
       if (current.expiresAt <= now) return false;
       if (!current.parentCapabilityId) return true;
       const parent = byId.get(current.parentCapabilityId);
-      if (!parent) return false;
+      if (!parent) return false; // dangling ancestor -> fail closed
+      // One row = one permission: a descendant must keep its parent's permission.
+      if (current.permissionId !== parent.permissionId) return false;
       current = parent;
     }
     return false;
@@ -183,16 +186,8 @@ export class DelegationService {
         }
       }
 
-      const existing = await this.prisma.adminCapability.findUnique({
-        where: {
-          userId_permissionId: {
-            userId: dto.granteeId,
-            permissionId: permissions.get(key) as string,
-          },
-        },
-      });
-      if (existing) throw new ConflictException('Capability sudah diberikan ke grantee');
-
+      // Duplicate resolution happens inside the transaction below so an
+      // expired/invalid row can be replaced atomically instead of blocking.
       plans.push({
         permissionId: permissions.get(key) as string,
         key,
@@ -203,6 +198,32 @@ export class DelegationService {
     const created = await this.prisma.$transaction(async (tx) => {
       const rows: any[] = [];
       for (const plan of plans) {
+        // Re-check inside the transaction: only a still-valid capability blocks
+        // the grant. An expired/invalid one is replaced in the same transaction.
+        const existing = await tx.adminCapability.findUnique({
+          where: {
+            userId_permissionId: {
+              userId: dto.granteeId,
+              permissionId: plan.permissionId,
+            },
+          },
+        });
+        let stale: CapabilityRow | null = null;
+        let invalidatedDescendantIds: string[] = [];
+        if (existing) {
+          const current = (await tx.adminCapability.findMany({
+            include: { permission: true },
+          })) as unknown as CapabilityRow[];
+          const currentById = new Map(current.map((capability) => [capability.id, capability]));
+          if (this.lineageValid(existing.id, currentById, now)) {
+            throw new ConflictException('Capability sudah diberikan ke grantee');
+          }
+          stale = existing as unknown as CapabilityRow;
+          invalidatedDescendantIds = this.descendantsOf(existing.id, current);
+          // ON DELETE CASCADE on parentCapabilityId removes descendants in the DB.
+          await tx.adminCapability.delete({ where: { id: existing.id } });
+        }
+
         const row = await tx.adminCapability.create({
           data: {
             userId: dto.granteeId,
@@ -213,6 +234,27 @@ export class DelegationService {
           },
         });
         rows.push(row);
+
+        if (stale && this.audit) {
+          await this.audit.record(
+            {
+              ...auditActor(actor),
+              action: 'delegation.revoke',
+              resourceType: 'delegation',
+              resourceId: stale.id,
+              before: {
+                id: stale.id,
+                granteeId: stale.userId,
+                permissionKey: plan.key,
+                grantedBy: stale.grantedBy,
+                parentCapabilityId: stale.parentCapabilityId,
+                expiresAt: stale.expiresAt,
+              },
+              after: { id: stale.id, replacedBy: row.id, invalidatedDescendantIds },
+            },
+            tx,
+          );
+        }
         if (this.audit) {
           await this.audit.record(
             {

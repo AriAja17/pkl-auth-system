@@ -124,6 +124,30 @@ describe('AuthorizationService', () => {
     expect(principal.capabilities.size).toBe(0);
   });
 
+  it('excludes capabilities whose lineage changes permission', async () => {
+    const future = new Date(Date.now() + 86_400_000);
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'u1',
+      email: 'user@example.com',
+      username: 'user',
+      isActive: true,
+      legacyRole: null,
+      roles: [],
+      capabilities: [
+        { id: 'good', permission: { key: 'read:user' } },
+        { id: 'bad', permission: { key: 'delete:user' } },
+      ],
+    });
+    prisma.adminCapability.findMany.mockResolvedValue([
+      { id: 'root-good', permissionId: 'p1', parentCapabilityId: null, expiresAt: future },
+      { id: 'good', permissionId: 'p1', parentCapabilityId: 'root-good', expiresAt: future },
+      { id: 'bad', permissionId: 'p2', parentCapabilityId: 'root-good', expiresAt: future },
+    ]);
+
+    const principal = await service.resolvePrincipal('u1');
+    expect([...principal.capabilities]).toEqual(['read:user']);
+  });
+
   it('enforces ALL-of and ANY-of with canonical keys only', () => {
     const principal = makePrincipal({
       permissions: new Set(['read:article', 'manage:user']),

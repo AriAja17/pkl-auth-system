@@ -59,10 +59,10 @@ export class AuthorizationService {
       };
     });
 
-    // Capabilities are checked with their lineage (doc 05 §7.3): an expired or
-    // dangling ancestor invalidates every descendant, fail closed.
+    // Capabilities are checked with their lineage (doc 05 §7.3): an expired,
+    // dangling or permission-mismatched ancestor invalidates every descendant.
     const allCapabilities = await this.prisma.adminCapability.findMany({
-      select: { id: true, parentCapabilityId: true, expiresAt: true },
+      select: { id: true, permissionId: true, parentCapabilityId: true, expiresAt: true },
     });
     const byId = new Map(allCapabilities.map((c) => [c.id, c]));
     const now = new Date();
@@ -89,7 +89,10 @@ export class AuthorizationService {
 
   private lineageValid(
     id: string,
-    byId: Map<string, { id: string; parentCapabilityId: string | null; expiresAt: Date }>,
+    byId: Map<
+      string,
+      { id: string; permissionId: string; parentCapabilityId: string | null; expiresAt: Date }
+    >,
     now: Date,
   ): boolean {
     const seen = new Set<string>();
@@ -101,6 +104,8 @@ export class AuthorizationService {
       if (!current.parentCapabilityId) return true; // valid root
       const parent = byId.get(current.parentCapabilityId);
       if (!parent) return false; // dangling ancestor -> fail closed
+      // One row = one permission: a descendant must keep its parent's permission.
+      if (current.permissionId !== parent.permissionId) return false;
       current = parent;
     }
     return false;
