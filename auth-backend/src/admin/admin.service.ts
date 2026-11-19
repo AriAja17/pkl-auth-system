@@ -33,9 +33,9 @@ export class AdminService {
     actor: Principal | undefined,
     action: string,
     resourceType: string,
-    resourceId: string,
+    resourceId: string | ((result: T) => string),
     before: unknown,
-    after: unknown,
+    after: Record<string, unknown> | null | ((result: T) => unknown),
     operation: (tx: any) => Promise<T>,
   ): Promise<T> {
     if (!this.audit || !actor) {
@@ -48,9 +48,12 @@ export class AdminService {
           ...auditActor(actor),
           action,
           resourceType,
-          resourceId,
+          resourceId:
+            typeof resourceId === 'function'
+              ? (resourceId as (result: T) => string)(result)
+              : resourceId,
           before,
-          after,
+          after: typeof after === 'function' ? (after as (result: T) => unknown)(result) : after,
         },
         tx,
       );
@@ -275,15 +278,16 @@ export class AdminService {
       actor,
       'user.create',
       'user',
-      dto.email,
+      (createdUser: any) => createdUser.id,
       null,
-      {
+      (createdUser: any) => ({
+        id: createdUser.id,
         email: dto.email,
         username,
         name: dto.name ?? null,
         phone: dto.phone ?? null,
         roleIds: roles.map((role: any) => role.id),
-      },
+      }),
       (tx) =>
         tx.user.create({
           data: {
@@ -328,7 +332,12 @@ export class AdminService {
       'user',
       id,
       this.userSnapshot(user),
-      { id, name: dto.name ?? null, phone: dto.phone ?? null, isActive: dto.isActive ?? user.isActive },
+      {
+        id,
+        name: dto.name !== undefined ? dto.name : (user.name ?? null),
+        phone: dto.phone !== undefined ? dto.phone : (user.phone ?? null),
+        isActive: dto.isActive ?? user.isActive,
+      },
       (tx) =>
         tx.user.update({
           where: { id },
@@ -491,9 +500,14 @@ export class AdminService {
       actor,
       'role.create',
       'role',
-      trimmed,
+      (createdRole: any) => createdRole.id,
       null,
-      { name: trimmed, description: dto.description ?? null, permissionKeys: keys },
+      (createdRole: any) => ({
+        id: createdRole.id,
+        name: trimmed,
+        description: dto.description ?? null,
+        permissionKeys: permissions.map((permission: any) => permission.key),
+      }),
       (tx) =>
         tx.role.create({
           data: {
@@ -535,7 +549,11 @@ export class AdminService {
       'role',
       id,
       { id, name: role.name, description: role.description ?? null },
-      { id, name: dto.name?.trim() ?? role.name, description: dto.description ?? null },
+      {
+        id,
+        name: dto.name?.trim() ?? role.name,
+        description: dto.description !== undefined ? dto.description : (role.description ?? null),
+      },
       (tx) =>
         tx.role.update({
           where: { id },
@@ -573,7 +591,10 @@ export class AdminService {
   }
 
   async setRolePermissions(roleId: string, dto: SetPermissionsDto, actor: Principal) {
-    const role = await this.prisma.role.findUnique({ where: { id: roleId } });
+    const role = await this.prisma.role.findUnique({
+      where: { id: roleId },
+      include: { permissions: { include: { permission: true } } },
+    });
     if (!role) throw new NotFoundException('Role tidak ditemukan');
     if (this.isSystemRole(role)) {
       throw new ForbiddenException('Role sistem tidak boleh diubah');
@@ -589,8 +610,19 @@ export class AdminService {
       'role.permissions.update',
       'role',
       roleId,
-      { id: roleId, name: role.name },
-      { id: roleId, permissionKeys: keys },
+      {
+        id: roleId,
+        name: role.name,
+        permissionKeys: (role.permissions ?? [])
+          .map((rp: any) => rp.permission.key)
+          .sort((a: string, b: string) => a.localeCompare(b)),
+      },
+      {
+        id: roleId,
+        permissionKeys: permissions
+          .map((permission: any) => permission.key)
+          .sort((a: string, b: string) => a.localeCompare(b)),
+      },
       async (tx) => {
         await tx.rolePermission.deleteMany({ where: { roleId } });
         await tx.rolePermission.createMany({

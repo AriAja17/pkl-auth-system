@@ -23,9 +23,9 @@ export class MenuService {
   private async mutate<T>(
     actor: Principal | undefined,
     action: string,
-    resourceId: string,
+    resourceId: string | ((result: T) => string),
     before: unknown,
-    after: unknown,
+    after: Record<string, unknown> | null | ((result: T) => unknown),
     operation: (tx: any) => Promise<T>,
   ): Promise<T> {
     if (!this.audit || !actor) {
@@ -38,9 +38,12 @@ export class MenuService {
           ...auditActor(actor),
           action,
           resourceType: 'menu',
-          resourceId,
+          resourceId:
+            typeof resourceId === 'function'
+              ? (resourceId as (result: T) => string)(result)
+              : resourceId,
           before,
-          after,
+          after: typeof after === 'function' ? (after as (result: T) => unknown)(result) : after,
         },
         tx,
       );
@@ -139,9 +142,19 @@ export class MenuService {
     const created = await this.mutate(
       actor,
       'menu.create',
-      dto.name,
+      (created: any) => created.id,
       null,
-      { name: dto.name, url: dto.url ?? null, parentId: dto.parentId ?? null },
+      (created: any) => ({
+        id: created.id,
+        name: dto.name,
+        url: dto.url ?? null,
+        icon: dto.icon ?? null,
+        parentId: dto.parentId ?? null,
+        order: dto.order ?? 0,
+        description: dto.description ?? null,
+        isActive: dto.isActive ?? true,
+        permissionIds: dto.permissionIds ?? [],
+      }),
       (tx) =>
         tx.menu.create({
           data: {
@@ -174,12 +187,38 @@ export class MenuService {
     }
     if (dto.permissionIds?.length) await this.validatePermissions(dto.permissionIds);
 
+    const previousPermissionIds = (existing.permissions ?? [])
+      .map((mp: any) => mp.permission.id)
+      .sort();
     const updated = await this.mutate(
       actor,
       'menu.update',
       id,
-      { id, name: existing.name, url: existing.url, parentId: existing.parentId },
-      { id, name: dto.name ?? existing.name, parentId: parentId ?? null },
+      {
+        id,
+        name: existing.name,
+        url: existing.url ?? null,
+        icon: existing.icon ?? null,
+        parentId: existing.parentId ?? null,
+        order: existing.order,
+        description: existing.description ?? null,
+        isActive: existing.isActive,
+        permissionIds: previousPermissionIds,
+      },
+      {
+        id,
+        name: dto.name ?? existing.name,
+        url: dto.url !== undefined ? dto.url : (existing.url ?? null),
+        icon: dto.icon !== undefined ? dto.icon : (existing.icon ?? null),
+        parentId: parentId ?? null,
+        order: dto.order ?? existing.order,
+        description:
+          dto.description !== undefined ? dto.description : (existing.description ?? null),
+        isActive: dto.isActive ?? existing.isActive,
+        permissionIds: dto.permissionIds
+          ? [...new Set(dto.permissionIds)].sort()
+          : previousPermissionIds,
+      },
       async (tx) => {
         const menu = await tx.menu.update({
           where: { id },
@@ -225,14 +264,24 @@ export class MenuService {
   }
 
   async setPermissions(id: string, dto: MenuPermissionsDto, actor?: Principal) {
-    await this.loadMenu(id);
+    const existing = await this.loadMenu(id);
     if (dto.permissionIds.length) await this.validatePermissions(dto.permissionIds);
     await this.mutate(
       actor,
       'menu.permissions.update',
       id,
-      { id },
-      { id, permissionIds: dto.permissionIds },
+      {
+        id,
+        permissionIds: [
+          ...new Set<string>((existing.permissions ?? []).map((mp: any) => mp.permission.id)),
+        ].sort((a: string, b: string) => a.localeCompare(b)),
+      },
+      {
+        id,
+        permissionIds: [...new Set(dto.permissionIds)].sort((a: string, b: string) =>
+          a.localeCompare(b),
+        ),
+      },
       async (tx) => {
         await tx.menuPermission.deleteMany({ where: { menuId: id } });
         await tx.menuPermission.createMany({

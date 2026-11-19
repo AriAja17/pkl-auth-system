@@ -43,6 +43,7 @@ const userRow = (overrides: Record<string, unknown> = {}) => ({
 
 describe('AdminService — user & role management', () => {
   let prisma: any;
+  let audit: any;
   let service: AdminService;
 
   beforeEach(() => {
@@ -92,7 +93,8 @@ describe('AdminService — user & role management', () => {
         Array.isArray(arg) ? Promise.all(arg) : arg(prisma),
       ),
     };
-    service = new AdminService(prisma as unknown as PrismaService);
+    audit = { record: jest.fn().mockResolvedValue(undefined) };
+    service = new AdminService(prisma as unknown as PrismaService, audit);
   });
 
   it('creates a user with hashed password and multiple roles, without leaking the hash', async () => {
@@ -436,5 +438,176 @@ describe('AdminService — user & role management', () => {
       }),
     } as unknown as ExecutionContext;
     expect(() => guard.canActivate(context)).toThrow(ForbiddenException);
+  });
+
+  it('audits createUser with the database user id, not the email', async () => {
+    prisma.user.create.mockImplementation(async ({ data }: any) =>
+      userRow({ id: 'user-generated-id', ...data }),
+    );
+
+    await service.createUser(
+      { email: 'new@example.com', password: 'secret123', username: 'newuser' },
+      actor(),
+    );
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.action).toBe('user.create');
+    expect(entry.resourceId).toBe('user-generated-id');
+    expect(entry.resourceId).not.toBe('new@example.com');
+    expect(entry.before).toBeNull();
+    expect(entry.after).toMatchObject({
+      id: 'user-generated-id',
+      email: 'new@example.com',
+      username: 'newuser',
+    });
+  });
+
+  it('audits createRole with the database role id, not the name', async () => {
+    prisma.role.create.mockImplementation(async ({ data }: any) => ({
+      id: 'role-generated-id',
+      ...data,
+      permissions: [],
+      _count: { users: 0 },
+    }));
+
+    await service.createRole({ name: 'Editor' }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.action).toBe('role.create');
+    expect(entry.resourceId).toBe('role-generated-id');
+    expect(entry.resourceId).not.toBe('Editor');
+    expect(entry.after).toMatchObject({ id: 'role-generated-id', name: 'Editor' });
+  });
+
+  it('keeps name and phone in the PATCH user audit when only isActive is sent', async () => {
+    prisma.user.findUnique.mockResolvedValue(
+      userRow({ name: 'Old Name', phone: '1234567890', isActive: true }),
+    );
+
+    await service.updateUser('user-1', { isActive: false }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before).toMatchObject({
+      name: 'Old Name',
+      phone: '1234567890',
+      isActive: true,
+    });
+    expect(entry.after).toMatchObject({
+      id: 'user-1',
+      name: 'Old Name',
+      phone: '1234567890',
+      isActive: false,
+    });
+  });
+
+  it('keeps description in the PATCH role audit when it is not sent', async () => {
+    prisma.role.findUnique.mockResolvedValue({
+      id: 'r2',
+      name: 'Editor',
+      description: 'Old description',
+      isSystem: false,
+    });
+
+    await service.updateRole('r2', { name: 'Renamed' }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before).toMatchObject({ description: 'Old description' });
+    expect(entry.after).toMatchObject({
+      id: 'r2',
+      name: 'Renamed',
+      description: 'Old description',
+    });
+  });
+
+  it('audits the previous and next permission keys on role permission change', async () => {
+    prisma.role.findUnique.mockResolvedValue({
+      id: 'r2',
+      name: 'Editor',
+      isSystem: false,
+      permissions: [
+        { permission: { key: 'read:user' } },
+        { permission: { key: 'create:user' } },
+      ],
+    });
+    prisma.permission.findMany.mockResolvedValue([
+      { id: 'p3', key: 'update:user', isProtected: false },
+    ]);
+
+    await service.setRolePermissions('r2', { permissionKeys: ['update:user'] }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before.permissionKeys).toEqual(['create:user', 'read:user']);
+    expect(entry.after).toMatchObject({ id: 'r2', permissionKeys: ['update:user'] });
+  });
+
+  it('records explicit null name and phone in the PATCH user audit', async () => {
+    prisma.user.findUnique.mockResolvedValue(
+      userRow({ name: 'Old Name', phone: '1234567890' }),
+    );
+
+    await service.updateUser('user-1', { name: null, phone: null } as any, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before).toMatchObject({ name: 'Old Name', phone: '1234567890' });
+    expect(entry.after).toMatchObject({ name: null, phone: null });
+  });
+
+  it('records explicit null description in the PATCH role audit', async () => {
+    prisma.role.findUnique.mockResolvedValue({
+      id: 'r2',
+      name: 'Editor',
+      description: 'Old description',
+      isSystem: false,
+    });
+
+    await service.updateRole('r2', { description: null } as any, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before.description).toBe('Old description');
+    expect(entry.after).toMatchObject({ name: 'Editor', description: null });
+  });
+
+  it('deduplicates permission keys in the createRole audit snapshot', async () => {
+    prisma.permission.findMany.mockResolvedValue([
+      { id: 'p1', key: 'read:user', isProtected: false },
+      { id: 'p2', key: 'create:user', isProtected: false },
+    ]);
+    prisma.role.create.mockImplementation(async ({ data }: any) => ({
+      id: 'role-generated-id',
+      ...data,
+      permissions: [],
+      _count: { users: 0 },
+    }));
+
+    await service.createRole(
+      { name: 'Editor', permissionKeys: ['read:user', 'create:user', 'read:user'] },
+      actor(),
+    );
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.after.permissionKeys).toEqual(['read:user', 'create:user']);
+    expect(new Set(entry.after.permissionKeys).size).toBe(entry.after.permissionKeys.length);
+  });
+
+  it('deduplicates and sorts permission keys in the setRolePermissions audit snapshot', async () => {
+    prisma.role.findUnique.mockResolvedValue({
+      id: 'r2',
+      name: 'Editor',
+      isSystem: false,
+      permissions: [],
+    });
+    prisma.permission.findMany.mockResolvedValue([
+      { id: 'p1', key: 'read:user', isProtected: false },
+      { id: 'p2', key: 'create:user', isProtected: false },
+    ]);
+
+    await service.setRolePermissions(
+      'r2',
+      { permissionKeys: ['read:user', 'create:user', 'read:user'] },
+      actor(),
+    );
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.after.permissionKeys).toEqual(['create:user', 'read:user']);
   });
 });

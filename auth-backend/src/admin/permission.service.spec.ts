@@ -29,6 +29,7 @@ const limitedActor = (): Principal => ({
 
 describe('PermissionService', () => {
   let prisma: any;
+  let audit: any;
   let service: PermissionService;
 
   beforeEach(() => {
@@ -65,7 +66,8 @@ describe('PermissionService', () => {
         Array.isArray(arg) ? Promise.all(arg) : arg(prisma),
       ),
     };
-    service = new PermissionService(prisma as unknown as PrismaService);
+    audit = { record: jest.fn().mockResolvedValue(undefined) };
+    service = new PermissionService(prisma as unknown as PrismaService, audit);
   });
 
   it('creates a permission and assigns it to superadmin atomically', async () => {
@@ -151,5 +153,87 @@ describe('PermissionService', () => {
     await expect(service.get('missing')).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+
+  it('audits createPermission with the database permission id, not the key', async () => {
+    prisma.permission.create.mockImplementation(async ({ data }: any) => ({
+      id: 'perm-generated-id',
+      createdAt: new Date(),
+      ...data,
+    }));
+
+    await service.create({ key: 'view:widget' }, superadmin());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.action).toBe('permission.create');
+    expect(entry.resourceId).toBe('perm-generated-id');
+    expect(entry.resourceId).not.toBe('view:widget');
+    expect(entry.before).toBeNull();
+    expect(entry.after).toMatchObject({
+      id: 'perm-generated-id',
+      key: 'view:widget',
+      isProtected: false,
+    });
+  });
+
+  it('audits PATCH permission with all fields and keeps omitted values', async () => {
+    prisma.permission.findUnique.mockResolvedValue({
+      id: 'p1',
+      key: 'view:widget',
+      description: 'Old description',
+      isProtected: false,
+    });
+
+    await service.update('p1', {}, superadmin());
+
+    const entry = audit.record.mock.calls[0][0];
+    const expected = {
+      id: 'p1',
+      key: 'view:widget',
+      description: 'Old description',
+      isProtected: false,
+    };
+    expect(entry.before).toEqual(expected);
+    expect(entry.after).toEqual(expected);
+  });
+
+  it('audits the new isProtected value on PATCH permission', async () => {
+    prisma.permission.findUnique.mockResolvedValue({
+      id: 'p1',
+      key: 'view:widget',
+      description: null,
+      isProtected: false,
+    });
+
+    await service.update('p1', { isProtected: true }, superadmin());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before.isProtected).toBe(false);
+    expect(entry.after).toEqual({
+      id: 'p1',
+      key: 'view:widget',
+      description: null,
+      isProtected: true,
+    });
+  });
+
+  it('records explicit null description in the PATCH permission audit', async () => {
+    prisma.permission.findUnique.mockResolvedValue({
+      id: 'p1',
+      key: 'view:widget',
+      description: 'Old description',
+      isProtected: false,
+    });
+
+    await service.update('p1', { description: null } as any, superadmin());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before.description).toBe('Old description');
+    expect(entry.after).toEqual({
+      id: 'p1',
+      key: 'view:widget',
+      description: null,
+      isProtected: false,
+    });
   });
 });

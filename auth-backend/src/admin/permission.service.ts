@@ -26,9 +26,9 @@ export class PermissionService {
   private async mutate<T>(
     actor: Principal | undefined,
     action: string,
-    resourceId: string,
+    resourceId: string | ((result: T) => string),
     before: unknown,
-    after: unknown,
+    after: Record<string, unknown> | null | ((result: T) => unknown),
     operation: (tx: any) => Promise<T>,
   ): Promise<T> {
     if (!this.audit || !actor) {
@@ -41,9 +41,12 @@ export class PermissionService {
           ...auditActor(actor),
           action,
           resourceType: 'permission',
-          resourceId,
+          resourceId:
+            typeof resourceId === 'function'
+              ? (resourceId as (result: T) => string)(result)
+              : resourceId,
           before,
-          after,
+          after: typeof after === 'function' ? (after as (result: T) => unknown)(result) : after,
         },
         tx,
       );
@@ -113,9 +116,14 @@ export class PermissionService {
     const created = await this.mutate(
       actor,
       'permission.create',
-      dto.key,
+      (created: any) => created.id,
       null,
-      { key: dto.key, description: dto.description ?? null, isProtected: dto.isProtected ?? false },
+      (created: any) => ({
+        id: created.id,
+        key: dto.key,
+        description: created.description ?? null,
+        isProtected: created.isProtected ?? false,
+      }),
       async (tx) => {
         const permission = await tx.permission.create({
           data: {
@@ -143,12 +151,27 @@ export class PermissionService {
       throw new ForbiddenException('Protected flag hanya diubah oleh superadmin');
     }
 
+    const isProtected =
+      actor.isSystem && dto.isProtected !== undefined
+        ? dto.isProtected
+        : permission.isProtected;
     const updated = await this.mutate(
       actor,
       'permission.update',
       id,
-      { id, key: permission.key, description: permission.description ?? null },
-      { id, description: dto.description ?? null },
+      {
+        id,
+        key: permission.key,
+        description: permission.description ?? null,
+        isProtected: permission.isProtected,
+      },
+      {
+        id,
+        key: permission.key,
+        description:
+          dto.description !== undefined ? dto.description : (permission.description ?? null),
+        isProtected,
+      },
       (tx) =>
         tx.permission.update({
           where: { id },

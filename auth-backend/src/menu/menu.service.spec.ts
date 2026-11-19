@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { MenuService } from './menu.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { Principal } from '../authorization/principal';
 import { MENU_URL_PATTERN, PRIMEICON_PATTERN } from '../common/validation/rules';
 
 const menuRow = (overrides: Record<string, unknown> = {}) => ({
@@ -18,8 +19,22 @@ const menuRow = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const actor = (): Principal => ({
+  id: 'actor-1',
+  email: 'admin@example.com',
+  username: 'admin',
+  isActive: true,
+  roles: [],
+  permissions: new Set(),
+  capabilities: new Set(),
+  isSystem: false,
+  legacyRoleName: null,
+  legacyPermissions: [],
+});
+
 describe('MenuService', () => {
   let prisma: any;
+  let audit: any;
   let service: MenuService;
 
   beforeEach(() => {
@@ -40,7 +55,8 @@ describe('MenuService', () => {
         Array.isArray(arg) ? Promise.all(arg) : arg(prisma),
       ),
     };
-    service = new MenuService(prisma as unknown as PrismaService);
+    audit = { record: jest.fn().mockResolvedValue(undefined) };
+    service = new MenuService(prisma as unknown as PrismaService, audit);
   });
 
   it('creates a menu with parent and permission mapping', async () => {
@@ -114,5 +130,129 @@ describe('MenuService', () => {
     expect(PRIMEICON_PATTERN.test('pi pi-users')).toBe(true);
     expect(PRIMEICON_PATTERN.test('pi-list-fw pi-bars')).toBe(true);
     expect(PRIMEICON_PATTERN.test('not-an-icon')).toBe(false);
+  });
+
+  it('audits createMenu with the database menu id, not the name', async () => {
+    prisma.menu.create.mockImplementation(async ({ data }: any) =>
+      menuRow({ id: 'menu-generated-id', ...data, permissions: [] }),
+    );
+
+    await service.create({ name: 'Users' }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.action).toBe('menu.create');
+    expect(entry.resourceId).toBe('menu-generated-id');
+    expect(entry.resourceId).not.toBe('Users');
+    expect(entry.before).toBeNull();
+    expect(entry.after).toMatchObject({
+      id: 'menu-generated-id',
+      name: 'Users',
+      url: null,
+      icon: null,
+      parentId: null,
+      order: 0,
+      isActive: true,
+      permissionIds: [],
+    });
+  });
+
+  it('audits changed and unchanged fields on PATCH menu', async () => {
+    prisma.menu.findUnique.mockResolvedValue(
+      menuRow({
+        name: 'Old Menu',
+        url: '/old',
+        icon: 'pi pi-users',
+        parentId: 'parent-1',
+        order: 2,
+        description: 'Old description',
+        isActive: false,
+        permissions: [{ permission: { id: 'p1' } }, { permission: { id: 'p2' } }],
+      }),
+    );
+    prisma.menu.findMany.mockResolvedValue([]);
+
+    await service.update('m1', { name: 'New Menu', order: 5 }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before).toMatchObject({
+      id: 'm1',
+      name: 'Old Menu',
+      url: '/old',
+      icon: 'pi pi-users',
+      parentId: 'parent-1',
+      order: 2,
+      description: 'Old description',
+      isActive: false,
+      permissionIds: ['p1', 'p2'],
+    });
+    expect(entry.after).toMatchObject({
+      id: 'm1',
+      name: 'New Menu',
+      url: '/old',
+      icon: 'pi pi-users',
+      parentId: 'parent-1',
+      order: 5,
+      description: 'Old description',
+      isActive: false,
+      permissionIds: ['p1', 'p2'],
+    });
+  });
+
+  it('audits previous and next permission ids on menu permission change', async () => {
+    prisma.menu.findUnique.mockResolvedValue(
+      menuRow({
+        permissions: [{ permission: { id: 'p1' } }, { permission: { id: 'p2' } }],
+      }),
+    );
+    prisma.permission.findMany.mockResolvedValue([{ id: 'p3' }]);
+
+    await service.setPermissions('m1', { permissionIds: ['p3'] }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before).toEqual({ id: 'm1', permissionIds: ['p1', 'p2'] });
+    expect(entry.after).toEqual({ id: 'm1', permissionIds: ['p3'] });
+  });
+
+  it('records explicit null url, icon and description in the PATCH menu audit', async () => {
+    prisma.menu.findUnique.mockResolvedValue(
+      menuRow({
+        name: 'Keep Name',
+        url: '/old',
+        icon: 'pi pi-users',
+        description: 'Old description',
+      }),
+    );
+    prisma.menu.findMany.mockResolvedValue([]);
+
+    await service.update(
+      'm1',
+      { url: null, icon: null, description: null } as any,
+      actor(),
+    );
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.before).toMatchObject({
+      name: 'Keep Name',
+      url: '/old',
+      icon: 'pi pi-users',
+      description: 'Old description',
+    });
+    expect(entry.after).toMatchObject({
+      name: 'Keep Name',
+      url: null,
+      icon: null,
+      description: null,
+    });
+  });
+
+  it('deduplicates and sorts permission ids in the setPermissions audit snapshot', async () => {
+    prisma.menu.findUnique.mockResolvedValue(menuRow());
+    prisma.permission.findMany.mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]);
+
+    await service.setPermissions('m1', { permissionIds: ['p2', 'p1', 'p2'] }, actor());
+
+    const entry = audit.record.mock.calls[0][0];
+    expect(entry.after.permissionIds).toEqual(['p1', 'p2']);
+    expect(new Set(entry.after.permissionIds).size).toBe(entry.after.permissionIds.length);
   });
 });
