@@ -9,36 +9,159 @@ datasource db {
 }
 
 model User {
-  id       String  @id @default(uuid())
-  email    String  @unique
-  password String
-  roleId   String?
-  role     Role?   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  id        String   @id @default(uuid())
+  email     String   @unique
+  /// D4: wajib, unik CASE-INSENSITIVE (citext), maksimal 30 karakter, [a-z0-9_]
+  /// Migration wajib: CREATE EXTENSION IF NOT EXISTS citext;
+  username  String   @unique @db.Citext
+  password  String // nama kolom dipertahankan; minimum 6 karakter (D5)
+  name      String?
+  phone     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// DEPRECATED (O2): sumber backfill. Nama DB tetap "roleId".
+  legacyRoleId String? @map("roleId")
+  /// DEPRECATED (O2): relasi lama, hanya untuk migrasi/verifikasi.
+  legacyRole   Role?   @relation("LegacyUserRole", fields: [legacyRoleId], references: [id], onDelete: Restrict)
+
+  roles        UserRole[]
+  capabilities AdminCapability[] @relation("CapabilityGrantee")
+  grantedCaps  AdminCapability[] @relation("CapabilityGrantor")
+  auditLogs    AuditLog[]        @relation("AuditActor")
 }
 
 model Role {
-  id          String           @id @default(uuid())
-  name        String           @unique
-  users       User[]
+  id          String   @id @default(uuid())
+  /// "superadmin" = role sistem. Konfigurasi, assignment, dan permission-nya
+  /// tidak bisa diubah via API (dokumen 05 §7.1).
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       UserRole[]
   permissions RolePermission[]
-  createdAt   DateTime         @default(now())
+  legacyUsers User[]   @relation("LegacyUserRole")
 }
 
 model Permission {
-  id    String           @id @default(uuid())
-  key   String           @unique
-  roles RolePermission[]
+  id          String   @id @default(uuid())
+  /// Format BARU "action:resource" (D1, sesuai helper form mentor).
+  /// Contoh: view:menu, read:article, manage:user.
+  /// Mapping dari key lama: article.read -> read:article, user.manage -> manage:user.
+  key         String   @unique
+  description String?
+  isProtected Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  roles        RolePermission[]
+  menus        MenuPermission[]
+  capabilities AdminCapability[]
+}
+
+model UserRole {
+  userId     String
+  roleId     String
+  assignedBy String?
+  assignedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@index([roleId])
 }
 
 model RolePermission {
   roleId        String
-  permissionsId String
-  role          Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  permission    Permission @relation(fields: [permissionsId], references: [id], onDelete: Cascade)
+  permissionsId String // nama kolom lama dipertahankan untuk kompatibilitas
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionsId], references: [id], onDelete: Cascade)
 
   @@id([roleId, permissionsId])
 }
 
+model Menu {
+  id          String   @id @default(uuid())
+  name        String
+  url         String? // nullable = group header
+  icon        String? // class PrimeIcons, contoh: pi-list-fw pi-bars
+  parentId    String?
+  parent      Menu?    @relation("MenuTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children    Menu[]   @relation("MenuTree")
+  order       Int      @default(0)
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  permissions MenuPermission[]
+
+  @@index([parentId])
+}
+
+model MenuPermission {
+  menuId       String
+  permissionId String
+
+  menu       Menu       @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([menuId, permissionId])
+}
+
+model AdminCapability {
+  id           String   @id @default(uuid())
+  userId       String // grantee
+  permissionId String
+  grantedBy    String // grantor — pembentuk rantai delegasi
+  grantedAt    DateTime @default(now())
+  /// Wajib, di masa depan, TTL maksimal 90 hari — tanpa pengecualian.
+  expiresAt    DateTime
+
+  /// Lineage: null = root capability (diberikan langsung oleh superadmin).
+  /// Self-FK menelusuri source grant. onDelete Cascade => saat ancestor
+  /// dicabut atau dihapus job expired, seluruh descendant ikut terhapus.
+  parentCapabilityId String?
+  parentCapability   AdminCapability?  @relation("CapabilityLineage", fields: [parentCapabilityId], references: [id], onDelete: Cascade)
+  children           AdminCapability[] @relation("CapabilityLineage")
+
+  grantee    User       @relation("CapabilityGrantee", fields: [userId], references: [id], onDelete: Cascade)
+  grantor    User       @relation("CapabilityGrantor", fields: [grantedBy], references: [id], onDelete: Restrict)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId])
+  @@index([grantedBy])
+  @@index([parentCapabilityId])
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorId      String?
+  actorEmail   String // snapshot, tetap ada jika User dihapus
+  action       String // konvensi: "resource.action", contoh: role.permissions.update
+  resourceType String
+  resourceId   String?
+  summary      String?
+  /// Sudah melewati redaction whitelist sebelum disimpan (dokumen 07 §5).
+  before       Json?
+  after        Json?
+  ip           String?
+  userAgent    String? // maksimal 512 karakter
+  createdAt    DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+}
+
+/// Fitur existing dari working tree — tidak diubah.
 model Article {
   id        String   @id @default(uuid())
   title     String

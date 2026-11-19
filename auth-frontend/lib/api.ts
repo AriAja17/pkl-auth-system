@@ -1,3 +1,5 @@
+import type { Page } from './api-types';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 export class ApiError extends Error {
@@ -52,4 +54,12 @@ export async function api<T>(
   }
 
   return data as T;
+}
+
+/** Wrapper for list endpoints that return { items, total, page, limit }. */
+export async function apiPage<T>(
+  path: string,
+  options: { method?: string; body?: unknown } = {},
+): Promise<Page<T>> {
+  return api<Page<T>>(path, options);
 }

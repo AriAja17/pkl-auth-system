@@ -20,25 +20,25 @@ export class ArticlesController {
   constructor(private articlesService: ArticlesService) {}
 
   @Get()
-  @RequirePermissions('article.read')
+  @RequirePermissions('read:article')
   findAll() {
     return this.articlesService.findAll();
   }
 
   @Post()
-  @RequirePermissions('article.create')
+  @RequirePermissions('create:article')
   create(@Body() dto: ArticleDto) {
     return this.articlesService.create(dto);
   }
 
   @Put(':id')
-  @RequirePermissions('article.update')
+  @RequirePermissions('update:article')
   update(@Param('id') id: string, @Body() dto: ArticleDto) {
     return this.articlesService.update(id, dto);
   }
 
   @Delete(':id')
-  @RequirePermissions('article.delete')
+  @RequirePermissions('delete:article')
   remove(@Param('id') id: string) {
     return this.articlesService.remove(id);
   }

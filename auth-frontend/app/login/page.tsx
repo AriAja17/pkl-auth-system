@@ -4,9 +4,11 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, setToken } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 
 export default function LoginPage() {
   const router = useRouter();
+  const { refresh } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -38,6 +40,7 @@ export default function LoginPage() {
         body: { email: email.trim(), password },
       });
       setToken(res.accessToken);
+      await refresh();
       router.push('/dashboard');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Terjadi kesalahan');

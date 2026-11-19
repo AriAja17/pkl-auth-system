@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, ApiError, clearToken, getToken } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 
-type Me = { id: string; email: string; role: string | null; permissions: string[] };
 type Article = { id: string; title: string; content: string; createdAt: string };
 type Toast = { type: 'ok' | 'error'; text: string };
 
 export default function ArticlesPage() {
+  const { me, has, loading, error } = useAuth();
   const router = useRouter();
-  const [me, setMe] = useState<Me | null>(null);
   const [articles, setArticles] = useState<Article[]>([]);
   const [toast, setToast] = useState<Toast | null>(null);
   const [title, setTitle] = useState('');
@@ -22,40 +22,37 @@ export default function ArticlesPage() {
   const loadArticles = useCallback(async () => {
     setArticles(await api<Article[]>('/articles'));
   }, []);
-
+  
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(timer);
   }, [toast]);
 
+  // Session is loaded once by AuthProvider; no duplicate /auth/me call here.
   useEffect(() => {
-    if (!getToken()) {
-      router.replace('/login');
-      return;
-    }
+    if (!me || !has('read:article')) return;
+    let active = true;
+    void (async () => {
+      try {
+        const result = await api<Article[]>('/articles');
+        if (active) setArticles(result);
+      } catch (err) {
+        if (active) handleError(err);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [me, has]);
 
-    api<Me>('/auth/me')
-      .then(async (m) => {
-        setMe(m);
-        if (m.permissions.includes('article.read')) {
-          await loadArticles();
-        }
-      })
-      .catch((err) => {
-        if (err instanceof ApiError && err.status === 401) {
-          clearToken();
-          router.replace('/login');
-        } else {
-          setToast({ type: 'error', text: err.message });
-        }
-      });
-  }, [router, loadArticles]);
+  useEffect(() => {
+    if (!loading && !me && !error) router.replace('/login');
+  }, [loading, me, error, router]);
 
   function handleError(err: unknown) {
-    if (err instanceof ApiError && err.status === 401) {
-      clearToken();
-      router.replace('/login');
+    if (err instanceof ApiError && err.status === 403) {
+      setToast({ type: 'error', text: 'Anda tidak punya izin untuk aksi ini' });
       return;
     }
     setToast({
@@ -120,16 +117,14 @@ export default function ArticlesPage() {
     }
   }
 
-  if (!me) {
-    return (
-      <p className="p-6 text-gray-500">{toast ? toast.text : 'Memuat...'}</p>
-    );
-  }
+  if (loading) return <p className="p-6 text-gray-500">Memuat...</p>;
+  if (error) return <p className="p-6 text-red-600">{error}</p>;
+  if (!me) return null;
 
-  const canRead = me.permissions.includes('article.read');
-  const canCreate = me.permissions.includes('article.create');
-  const canUpdate = me.permissions.includes('article.update');
-  const canDelete = me.permissions.includes('article.delete');
+  const canRead = me.canonicalPermissions.includes('read:article');
+  const canCreate = me.canonicalPermissions.includes('create:article');
+  const canUpdate = me.canonicalPermissions.includes('update:article');
+  const canDelete = me.canonicalPermissions.includes('delete:article');
   const showForm = editingId ? canUpdate : canCreate;
 
   const abilities = [

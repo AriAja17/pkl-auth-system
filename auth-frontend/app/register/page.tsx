@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
@@ -16,7 +17,10 @@ export default function RegisterPage() {
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
       return 'Format email tidak valid. Email harus mengandung @ dan domain, contoh: nama@gmail.com';
     }
-    if (password.length < 8) return 'Password minimal 8 karakter';
+    if (username.trim() && !/^[a-z0-9_]{3,30}$/.test(username.trim())) {
+      return 'Username harus 3-30 karakter [a-z0-9_]';
+    }
+    if (password.length < 6) return 'Password minimal 6 karakter';
     return null;
   }
 
@@ -32,9 +36,14 @@ export default function RegisterPage() {
     setError('');
     setLoading(true);
     try {
+      const name = username.trim();
       await api('/auth/register', {
         method: 'POST',
-        body: { email: email.trim(), password },
+        body: {
+          email: email.trim(),
+          password,
+          ...(name ? { username: name } : {}),
+        },
       });
       setSuccess(true);
     } catch (err) {
@@ -71,8 +80,15 @@ export default function RegisterPage() {
               className="w-full rounded border border-gray-300 p-2"
             />
             <input
+              type="text"
+              placeholder="Username (opsional)"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full rounded border border-gray-300 p-2"
+            />
+            <input
               type="password"
-              placeholder="Password (min. 8 karakter)"
+              placeholder="Password (min. 6 karakter)"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full rounded border border-gray-300 p-2"

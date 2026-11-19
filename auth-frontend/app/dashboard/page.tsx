@@ -1,51 +1,35 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, ApiError, clearToken, getToken } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 
-type Me = {
-  id: string;
-  email: string;
-  role: string | null;
-  permissions: string[];
-};
+const ADMIN_KEYS = [
+  'read:user',
+  'read:role',
+  'read:permission',
+  'read:menu',
+  'read:delegation',
+  'read:audit',
+  'manage:user',
+];
 
 export default function DashboardPage() {
+  const { me, loading, error, has, logout } = useAuth();
   const router = useRouter();
-  const [me, setMe] = useState<Me | null>(null);
-  const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!getToken()) {
-      router.replace('/login');
-      return;
-    }
+    if (!loading && !me && !error) router.replace('/login');
+  }, [loading, me, error, router]);
 
-    api<Me>('/auth/me')
-      .then(setMe)
-      .catch((err) => {
-        if (err instanceof ApiError && err.status === 401) {
-          clearToken();
-          router.replace('/login');
-        } else {
-          setError(err.message);
-        }
-      });
-  }, [router]);
+  if (loading) return <p className="p-6 text-gray-500">Memuat...</p>;
+  if (error) return <p className="p-6 text-red-600">{error}</p>;
+  if (!me) return null;
 
-  function logout() {
-    clearToken();
-    router.replace('/login');
-  }
-
-  if (error) {
-    return <p className="p-6 text-red-600">{error}</p>;
-  }
-  if (!me) {
-    return <p className="p-6 text-gray-500">Memuat...</p>;
-  }
+  const roleNames = me.roles?.map((role) => role.name).join(', ');
+  const permissions = me.canonicalPermissions ?? [];
+  const canAdmin = ADMIN_KEYS.some((key) => has(key));
 
   return (
     <main className="min-h-screen bg-gray-50 p-4">
@@ -64,8 +48,8 @@ export default function DashboardPage() {
 
         <div>
           <p className="text-sm text-gray-500">Role</p>
-          {me.role ? (
-            <p>{me.role}</p>
+          {roleNames ? (
+            <p>{roleNames}</p>
           ) : (
             <p className="text-amber-600">
               Belum ada role. Menunggu admin memberi akses.
@@ -75,33 +59,34 @@ export default function DashboardPage() {
 
         <div>
           <p className="text-sm text-gray-500 mb-1">Permission</p>
-          {me.permissions.length === 0 ? (
+          {permissions.length === 0 ? (
             <p className="text-gray-400">Tidak ada</p>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {me.permissions.map((p) => (
+              {permissions.map((key) => (
                 <span
-                  key={p}
+                  key={key}
                   className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700"
                 >
-                  {p}
+                  {key}
                 </span>
               ))}
             </div>
           )}
         </div>
 
-        {me.permissions.includes('user.manage') && (
-          <Link href="/admin" className="inline-block text-blue-600 underline">
-            Buka halaman admin
-          </Link>
-        )}
-
-        {me.permissions.includes('article.read') && (
-        <Link href="/articles" className="inline-block text-blue-600 underline">
-          Buka halaman artikel
-        </Link>
-      )}
+        <div className="flex flex-wrap gap-4">
+          {canAdmin && (
+            <Link href="/admin" className="text-blue-600 underline">
+              Buka panel administrasi
+            </Link>
+          )}
+          {has('read:article') && (
+            <Link href="/articles" className="text-blue-600 underline">
+              Buka halaman artikel
+            </Link>
+          )}
+        </div>
       </div>
     </main>
   );
