@@ -283,6 +283,14 @@ http://localhost:4000
 | POST | `/auth/login` | Publik | Login dan mendapatkan JWT |
 | GET | `/auth/me` | Token | Mendapatkan informasi pengguna |
 
+> **Rate limit login:** `POST /auth/login` dibatasi 10 request per IP per 15 menit
+> (`AUTH_LOGIN_RATE_LIMIT` dan `AUTH_LOGIN_RATE_TTL_MS` di `.env`). Guard hanya
+> dipasang pada endpoint login; endpoint lain tidak terkena. Identitas klien
+> diambil dari `req.ip` Express — `X-Forwarded-For` tidak dipercaya karena
+> `trust proxy` tidak diaktifkan. Penyimpanan throttler bersifat **in-memory per
+> process**, sehingga pada beberapa instance batasnya tidak global; diperlukan
+> storage bersama jika batas lintas-instance diinginkan.
+
 ### Articles
 
 | Method | Endpoint | Permission | Fungsi |
@@ -368,7 +376,6 @@ Akun admin pertama dibuat berdasarkan konfigurasi `ADMIN_EMAIL` dan `ADMIN_PASSW
 
 Beberapa pengembangan yang direncanakan:
 
-- Pembatasan percobaan login menggunakan `@nestjs/throttler`.
 - Penggunaan cookie `httpOnly`.
 - Implementasi refresh token dan logout sisi server.
 - Soft delete untuk pengguna.

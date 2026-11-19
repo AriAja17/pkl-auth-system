@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { loginThrottlerOptions } from './auth/login-rate-limit.config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -12,7 +14,7 @@ import { AuditModule } from './audit/audit.module';
 
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), ScheduleModule.forRoot(), PrismaModule, AuthorizationModule, AuditModule, AuthModule, ArticlesModule, AdminModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), ScheduleModule.forRoot(), ThrottlerModule.forRoot(loginThrottlerOptions()), PrismaModule, AuthorizationModule, AuditModule, AuthModule, ArticlesModule, AdminModule],
   controllers: [AppController],
   providers: [AppService],
 })
