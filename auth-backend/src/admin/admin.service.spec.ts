@@ -151,6 +151,22 @@ describe('AdminService — user & role management', () => {
     );
   });
 
+  it('prevents updating own account (including self-deactivation)', async () => {
+    await expect(
+      service.updateUser('actor-1', { isActive: false }, actor()),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    await service.updateUser('user-1', { isActive: false }, actor());
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'user-1' },
+        data: expect.objectContaining({ isActive: false }),
+      }),
+    );
+  });
+
   it('replaces roles through UserRole inside a transaction', async () => {
     prisma.user.findUnique.mockResolvedValue(userRow());
     prisma.role.findMany.mockResolvedValue([
@@ -176,6 +192,182 @@ describe('AdminService — user & role management', () => {
     await expect(
       service.removeUserRole('user-1', 'r-sys', actor()),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('legacy assignRole rejects a role whose permissions exceed actor capability', async () => {
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    prisma.role.findMany.mockResolvedValue([
+      {
+        id: 'role-danger',
+        name: 'Danger',
+        isSystem: false,
+        permissions: [{ permission: { key: 'delete:user' } }],
+      },
+    ]);
+    const limited = actor({
+      isSystem: false,
+      permissions: new Set(['read:user', 'delete:user']),
+      capabilities: new Set(['read:user']),
+    });
+
+    await expect(service.assignRole('user-1', 'role-danger', limited)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('legacy assignRole keeps superadmin protection and self-assignment guard', async () => {
+    // Self-assignment is rejected before any lookup or write.
+    await expect(service.assignRole('actor-1', 'role-a', actor())).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+
+    prisma.user.findUnique.mockResolvedValue(
+      userRow({
+        roles: [{ role: { id: 'r-sys', name: 'superadmin', isSystem: true } }],
+      }),
+    );
+    await expect(service.assignRole('user-1', 'role-a', actor())).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    prisma.role.findMany.mockResolvedValue([
+      { id: 'r-sys', name: 'superadmin', isSystem: true, permissions: [] },
+    ]);
+    await expect(service.assignRole('user-1', 'r-sys', actor())).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('superadmin can still assign a non-system role holding a protected permission', async () => {
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    prisma.role.findMany.mockResolvedValue([
+      {
+        id: 'role-a',
+        name: 'Editor',
+        isSystem: false,
+        permissions: [{ permission: { key: 'manage:user', isProtected: true } }],
+      },
+    ]);
+
+    const result = await service.assignRole('user-1', 'role-a', actor());
+
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: { legacyRoleId: 'role-a' },
+    });
+    expect(result).toEqual({ userId: 'user-1', role: 'Editor' });
+  });
+
+  it('rejects isProtected permissions even when the actor has permission and capability', async () => {
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    prisma.role.findMany.mockResolvedValue([
+      {
+        id: 'role-protected',
+        name: 'Protected',
+        isSystem: false,
+        permissions: [{ permission: { key: 'delete:role', isProtected: true } }],
+      },
+    ]);
+    const limited = actor({
+      isSystem: false,
+      permissions: new Set(['delete:role']),
+      capabilities: new Set(['delete:role']),
+    });
+
+    const attempt = service.assignRole('user-1', 'role-protected', limited);
+    await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(attempt).rejects.toThrow('hanya untuk superadmin');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a protected key even when the database isProtected flag is false', async () => {
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    prisma.role.findMany.mockResolvedValue([
+      {
+        id: 'role-key',
+        name: 'Grant',
+        isSystem: false,
+        permissions: [{ permission: { key: 'grant:admin', isProtected: false } }],
+      },
+    ]);
+    const limited = actor({
+      isSystem: false,
+      permissions: new Set(['grant:admin']),
+      capabilities: new Set(['grant:admin']),
+    });
+
+    const attempt = service.addUserRole('user-1', 'role-key', limited);
+    await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(attempt).rejects.toThrow('hanya untuk superadmin');
+    expect(prisma.userRole.create).not.toHaveBeenCalled();
+  });
+
+  it('still assigns a normal role within permission and capability for non-superadmin', async () => {
+    const normalRole = {
+      id: 'role-normal',
+      name: 'Editor',
+      isSystem: false,
+      permissions: [{ permission: { key: 'read:user', isProtected: false } }],
+    };
+    const limited = actor({
+      isSystem: false,
+      permissions: new Set(['read:user']),
+      capabilities: new Set(['read:user']),
+    });
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    prisma.role.findMany.mockResolvedValue([normalRole]);
+
+    await expect(service.assignRole('user-1', 'role-normal', limited)).resolves.toEqual({
+      userId: 'user-1',
+      role: 'Editor',
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: { legacyRoleId: 'role-normal' },
+    });
+
+    await expect(service.addUserRole('user-1', 'role-normal', limited)).resolves.toEqual({
+      userId: 'user-1',
+      role: 'Editor',
+    });
+    expect(prisma.userRole.create).toHaveBeenCalledWith({
+      data: { userId: 'user-1', roleId: 'role-normal' },
+    });
+  });
+
+  it('multi-role assignment keeps its capability boundary and UserRole write', async () => {
+    prisma.user.findUnique.mockResolvedValue(userRow());
+    prisma.role.findMany.mockResolvedValue([
+      {
+        id: 'role-danger',
+        name: 'Danger',
+        isSystem: false,
+        permissions: [{ permission: { key: 'delete:user' } }],
+      },
+    ]);
+    const limited = actor({
+      isSystem: false,
+      permissions: new Set(['delete:user']),
+      capabilities: new Set(['read:user']),
+    });
+    await expect(
+      service.addUserRole('user-1', 'role-danger', limited),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.userRole.create).not.toHaveBeenCalled();
+
+    prisma.role.findMany.mockResolvedValue([
+      { id: 'role-ok', name: 'Editor', isSystem: false, permissions: [] },
+    ]);
+    await expect(service.addUserRole('user-1', 'role-ok', actor())).resolves.toEqual({
+      userId: 'user-1',
+      role: 'Editor',
+    });
+    expect(prisma.userRole.create).toHaveBeenCalledWith({
+      data: { userId: 'user-1', roleId: 'role-ok' },
+    });
   });
 
   it('enforces delegated boundaries when creating a role', async () => {

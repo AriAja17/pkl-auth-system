@@ -205,7 +205,13 @@ export class AdminService {
       }
       if (!actor.isSystem) {
         for (const rp of role.permissions) {
-          const key = rp.permission.key;
+          const permission = rp.permission;
+          const key = permission.key;
+          if (permission.isProtected || isProtectedPermissionKey(key)) {
+            throw new ForbiddenException(
+              `Permission ${key} hanya untuk ${SYSTEM_ROLE_NAME}`,
+            );
+          }
           if (!actor.permissions.has(key) || !actor.capabilities.has(key)) {
             throw new ForbiddenException(`Role memuat permission di luar capability: ${key}`);
           }
@@ -311,6 +317,7 @@ export class AdminService {
   }
 
   async updateUser(id: string, dto: UpdateUserDto, actor: Principal) {
+    this.assertNotSelf(id, actor);
     const user = await this.loadUser(id);
     if (this.hasSystemRole(user)) {
       throw new ForbiddenException('User sistem tidak bisa diubah via API');
@@ -609,11 +616,7 @@ export class AdminService {
     if (this.hasSystemRole(user)) {
       throw new ForbiddenException('Role user sistem tidak bisa diubah');
     }
-    const role = await this.prisma.role.findUnique({ where: { id: roleId } });
-    if (!role) throw new NotFoundException('Role tidak ditemukan');
-    if (this.isSystemRole(role)) {
-      throw new ForbiddenException('Role sistem tidak bisa diberikan ke user lain');
-    }
+    const [role] = await this.assertRolesAssignable([roleId], actor);
     await this.mutate(
       actor,
       'user.legacyRole.assign',

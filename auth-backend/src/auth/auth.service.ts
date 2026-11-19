@@ -58,7 +58,9 @@ export class AuthService {
     const passwordMatch =
       user && (await bcrypt.compare(dto.password, user.password));
 
-    if (!user || !passwordMatch) {
+    // Same error for unknown email, wrong password and inactive accounts so
+    // login never reveals account status. bcrypt still runs for inactive users.
+    if (!user || !passwordMatch || !user.isActive) {
       throw new UnauthorizedException('Email atau password salah');
     }
 
