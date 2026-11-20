@@ -14,6 +14,7 @@ import {
   ConfirmDialog,
   Drawer,
   EmptyState,
+  ErrorState,
   Field,
   Input,
   LoadingState,
@@ -40,7 +41,9 @@ export default function PermissionsPage() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [data, setData] = useState<Page<PermissionView> | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [drift, setDrift] = useState<Drift | null>(null);
+  const [driftError, setDriftError] = useState('');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [dialog, setDialog] = useState<{
     title: string;
@@ -54,14 +57,27 @@ export default function PermissionsPage() {
   const [keyError, setKeyError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Main catalogue and drift are independent: a drift failure must never hide
+  // a successfully loaded permission list.
   const load = useCallback(async () => {
-    setData(
-      await apiPage<PermissionView>(
-        `/admin/permissions?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
-      ),
+    const result = await apiPage<PermissionView>(
+      `/admin/permissions?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
     );
-    setDrift(await api<Drift>('/admin/permissions/drift'));
+    setData(result);
+    setLoadError('');
   }, [page, query]);
+
+  const loadDrift = useCallback(async () => {
+    try {
+      const result = await api<Drift>('/admin/permissions/drift');
+      setDrift(result);
+      setDriftError('');
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setDrift(null);
+      setDriftError(apiErrorText(err, 'Gagal memuat informasi drift.'));
+    }
+  }, [router]);
 
   useEffect(() => {
     let active = true;
@@ -70,13 +86,29 @@ export default function PermissionsPage() {
         if (active) await load();
       } catch (err) {
         if (!active || handleUnauthorized(err, router)) return;
+        setLoadError(apiErrorText(err, 'Gagal memuat katalog permission.'));
         setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat katalog permission.') });
       }
+    })();
+    void (async () => {
+      await loadDrift();
     })();
     return () => {
       active = false;
     };
-  }, [load, router]);
+  }, [load, loadDrift, router]);
+
+  async function retryLoad() {
+    setLoadError('');
+    setData(null);
+    try {
+      await load();
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setLoadError(apiErrorText(err, 'Gagal memuat katalog permission.'));
+    }
+    void loadDrift();
+  }
 
   function reportError(err: unknown) {
     if (handleUnauthorized(err, router)) return;
@@ -183,6 +215,20 @@ export default function PermissionsPage() {
         }
       />
 
+      {driftError && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning bg-warning-surface p-3 text-sm text-warning"
+        >
+          <p>
+            {driftError} Daftar permission tetap dapat digunakan.
+          </p>
+          <Button variant="link" size="sm" onClick={() => void loadDrift()}>
+            Coba lagi
+          </Button>
+        </div>
+      )}
+
       {drift && driftCount > 0 && (
         <div role="status" className="rounded-md border border-warning bg-warning-surface p-4 text-sm text-warning">
           <p className="font-semibold">Drift terdeteksi ({driftCount})</p>
@@ -218,7 +264,9 @@ export default function PermissionsPage() {
           <Button type="submit" variant="secondary">Cari</Button>
         </form>
 
-        {!data ? (
+        {loadError ? (
+          <ErrorState message={loadError} onRetry={() => void retryLoad()} />
+        ) : !data ? (
           <LoadingState rows={5} />
         ) : data.items.length === 0 ? (
           <EmptyState title="Belum ada permission" text="Tidak ada permission yang cocok." />

@@ -13,6 +13,7 @@ import {
   ConfirmDialog,
   Drawer,
   EmptyState,
+  ErrorState,
   Field,
   Input,
   LoadingState,
@@ -43,6 +44,7 @@ export default function DelegationsPage() {
   const [page, setPage] = useState(1);
   const [granteeFilter, setGranteeFilter] = useState('');
   const [data, setData] = useState<Page<DelegationView> | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [users, setUsers] = useState<UserView[]>([]);
   const [permissions, setPermissions] = useState<PermissionView[]>([]);
   const [catalogState, setCatalogState] = useState<CatalogState>('loading');
@@ -81,11 +83,11 @@ export default function DelegationsPage() {
 
   const load = useCallback(async () => {
     const suffix = granteeFilter ? `&granteeId=${granteeFilter}` : '';
-    setData(
-      await apiPage<DelegationView>(
-        `/admin/delegations?page=${page}&limit=10${suffix}`,
-      ),
+    const result = await apiPage<DelegationView>(
+      `/admin/delegations?page=${page}&limit=10${suffix}`,
     );
+    setData(result);
+    setLoadError('');
   }, [page, granteeFilter]);
 
   const loadCatalog = useCallback(async () => {
@@ -111,6 +113,7 @@ export default function DelegationsPage() {
         if (active) await load();
       } catch (err) {
         if (!active || handleUnauthorized(err, router)) return;
+        setLoadError(apiErrorText(err, 'Gagal memuat delegasi.'));
         setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat delegasi.') });
       }
     })();
@@ -118,6 +121,17 @@ export default function DelegationsPage() {
       active = false;
     };
   }, [load, router]);
+
+  async function retryLoad() {
+    setLoadError('');
+    setData(null);
+    try {
+      await load();
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setLoadError(apiErrorText(err, 'Gagal memuat delegasi.'));
+    }
+  }
 
   useEffect(() => {
     void (async () => {
@@ -263,7 +277,9 @@ export default function DelegationsPage() {
           <Button type="submit" variant="secondary">Filter</Button>
         </form>
 
-        {!data ? (
+        {loadError ? (
+          <ErrorState message={loadError} onRetry={() => void retryLoad()} />
+        ) : !data ? (
           <LoadingState rows={5} />
         ) : data.items.length === 0 ? (
           <EmptyState title="Belum ada delegasi" text="Tidak ada delegasi yang cocok." />

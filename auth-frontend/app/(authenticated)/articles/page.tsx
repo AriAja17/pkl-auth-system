@@ -100,6 +100,17 @@ export default function ArticlesPage() {
     setToast({ type: 'error', text: apiErrorText(err) });
   }
 
+  async function retryArticles() {
+    setLoadError('');
+    setArticles(null);
+    try {
+      await loadArticles();
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setLoadError(apiErrorText(err, 'Gagal memuat artikel.'));
+    }
+  }
+
   async function submit() {
     if (!form) return;
     const found: FieldErrors = {};
@@ -207,7 +218,10 @@ export default function ArticlesPage() {
           text="Role kamu belum punya izin untuk melihat artikel. Minta admin memberi akses."
         />
       ) : loadError ? (
-        <ErrorState message={loadError} />
+        <ErrorState
+          message={loadError}
+          onRetry={() => void retryArticles()}
+        />
       ) : articles === null ? (
         <LoadingState rows={3} />
       ) : articles.length === 0 ? (

@@ -26,6 +26,8 @@ export default function Topbar({
 }: TopbarProps) {
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
+  const profileButtonRef = useRef<HTMLButtonElement>(null);
+  const profilePanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!profileOpen) return;
@@ -36,11 +38,18 @@ export default function Topbar({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setProfileOpen(false);
+      if (event.key === 'Escape') {
+        setProfileOpen(false);
+        profileButtonRef.current?.focus();
+      }
     };
 
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('keydown', handleKeyDown);
+    // The panel is informational (identity + logout), not an action menu.
+    profilePanelRef.current
+      ?.querySelector<HTMLElement>('button')
+      ?.focus();
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
@@ -72,10 +81,11 @@ export default function Topbar({
 
       <div ref={profileRef} className="relative">
         <button
+          ref={profileButtonRef}
           type="button"
           onClick={() => setProfileOpen((value) => !value)}
-          aria-haspopup="menu"
           aria-expanded={profileOpen}
+          aria-controls="profile-panel"
           className="flex max-w-[60vw] items-center gap-2 rounded-sm border border-transparent px-2 py-1 text-sm text-text-secondary hover:border-border-subtle hover:bg-brand-primary-subtle sm:max-w-none"
         >
           <span className="truncate">{email}</span>
@@ -86,7 +96,10 @@ export default function Topbar({
 
         {profileOpen && (
           <div
-            role="menu"
+            ref={profilePanelRef}
+            id="profile-panel"
+            role="group"
+            aria-label="Profil dan logout"
             className="absolute right-0 top-full z-30 mt-1 w-64 rounded-md border border-border-subtle bg-surface p-3 shadow-2"
           >
             <p className="truncate text-sm font-medium text-text-primary" title={email}>
@@ -109,7 +122,6 @@ export default function Topbar({
               <Button
                 variant="ghost"
                 size="sm"
-                role="menuitem"
                 className="w-full justify-start text-danger"
                 onClick={onLogout}
               >

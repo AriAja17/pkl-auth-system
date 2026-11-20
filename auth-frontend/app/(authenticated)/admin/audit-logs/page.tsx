@@ -10,6 +10,7 @@ import {
   Badge,
   Button,
   EmptyState,
+  ErrorState,
   Field,
   Input,
   LoadingState,
@@ -48,6 +49,7 @@ export default function AuditLogsPage() {
   const [draft, setDraft] = useState<Filters>(emptyFilters);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [data, setData] = useState<Page<AuditLogView> | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<AuditLogView | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
 
@@ -61,7 +63,11 @@ export default function AuditLogsPage() {
         params.set(key, value);
       }
     }
-    setData(await apiPage<AuditLogView>(`/admin/audit-logs?${params.toString()}`));
+    const result = await apiPage<AuditLogView>(
+      `/admin/audit-logs?${params.toString()}`,
+    );
+    setData(result);
+    setLoadError('');
   }, [page, filters]);
 
   useEffect(() => {
@@ -71,6 +77,7 @@ export default function AuditLogsPage() {
         if (active) await load();
       } catch (err) {
         if (!active || handleUnauthorized(err, router)) return;
+        setLoadError(apiErrorText(err, 'Gagal memuat activity / audit.'));
         setToast({
           type: 'error',
           text: apiErrorText(err, 'Gagal memuat activity / audit.'),
@@ -81,6 +88,17 @@ export default function AuditLogsPage() {
       active = false;
     };
   }, [load, router]);
+
+  async function retryLoad() {
+    setLoadError('');
+    setData(null);
+    try {
+      await load();
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setLoadError(apiErrorText(err, 'Gagal memuat activity / audit.'));
+    }
+  }
 
   if (!has('read:audit')) {
     return <EmptyState title="Tidak ada akses" text="Anda tidak memiliki izin read:audit." />;
@@ -173,7 +191,12 @@ export default function AuditLogsPage() {
           </div>
         </form>
 
-        {!data ? (
+        {loadError ? (
+          <ErrorState
+            message={loadError}
+            onRetry={() => void retryLoad()}
+          />
+        ) : !data ? (
           <LoadingState rows={5} />
         ) : data.items.length === 0 ? (
           <EmptyState

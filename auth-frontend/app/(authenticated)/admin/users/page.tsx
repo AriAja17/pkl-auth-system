@@ -13,6 +13,7 @@ import {
   ConfirmDialog,
   Drawer,
   EmptyState,
+  ErrorState,
   Field,
   Input,
   LoadingState,
@@ -55,6 +56,7 @@ export default function UsersPage() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [data, setData] = useState<Page<UserView> | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [roles, setRoles] = useState<RoleDetail[]>([]);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [dialog, setDialog] = useState<{
@@ -71,11 +73,11 @@ export default function UsersPage() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    setData(
-      await apiPage<UserView>(
-        `/admin/users?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
-      ),
+    const result = await apiPage<UserView>(
+      `/admin/users?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
     );
+    setData(result);
+    setLoadError('');
   }, [page, query]);
 
   useEffect(() => {
@@ -85,6 +87,7 @@ export default function UsersPage() {
         if (active) await load();
       } catch (err) {
         if (!active || handleUnauthorized(err, router)) return;
+        setLoadError(apiErrorText(err, 'Gagal memuat user.'));
         setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat user.') });
       }
     })();
@@ -92,6 +95,17 @@ export default function UsersPage() {
       active = false;
     };
   }, [load, router]);
+
+  async function retryLoad() {
+    setLoadError('');
+    setData(null);
+    try {
+      await load();
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setLoadError(apiErrorText(err, 'Gagal memuat user.'));
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -279,7 +293,9 @@ export default function UsersPage() {
           </Button>
         </form>
 
-        {!data ? (
+        {loadError ? (
+          <ErrorState message={loadError} onRetry={() => void retryLoad()} />
+        ) : !data ? (
           <LoadingState rows={5} />
         ) : data.items.length === 0 ? (
           <EmptyState title="Belum ada user" text="Tidak ada user yang cocok." />

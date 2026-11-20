@@ -13,6 +13,7 @@ import {
   ConfirmDialog,
   Drawer,
   EmptyState,
+  ErrorState,
   Field,
   Input,
   LoadingState,
@@ -74,6 +75,7 @@ export default function MenusPage() {
   const canonicalPermissions = useMemo(() => me?.canonicalPermissions ?? [], [me]);
   const router = useRouter();
   const [data, setData] = useState<Page<MenuNode> | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [permissions, setPermissions] = useState<PermissionView[]>([]);
   const [catalogState, setCatalogState] = useState<CatalogState>('loading');
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -90,7 +92,9 @@ export default function MenusPage() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    setData(await apiPage<MenuNode>('/admin/menus?page=1&limit=100'));
+    const result = await apiPage<MenuNode>('/admin/menus?page=1&limit=100');
+    setData(result);
+    setLoadError('');
   }, []);
 
   const loadCatalog = useCallback(async () => {
@@ -112,6 +116,7 @@ export default function MenusPage() {
         if (active) await load();
       } catch (err) {
         if (!active || handleUnauthorized(err, router)) return;
+        setLoadError(apiErrorText(err, 'Gagal memuat menu.'));
         setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat menu.') });
       }
     })();
@@ -119,6 +124,17 @@ export default function MenusPage() {
       active = false;
     };
   }, [load, router]);
+
+  async function retryLoad() {
+    setLoadError('');
+    setData(null);
+    try {
+      await load();
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setLoadError(apiErrorText(err, 'Gagal memuat menu.'));
+    }
+  }
 
   useEffect(() => {
     void (async () => {
@@ -366,7 +382,9 @@ export default function MenusPage() {
       </p>
 
       <div className="rounded-md border border-border-subtle bg-surface p-4">
-        {!data ? (
+        {loadError ? (
+          <ErrorState message={loadError} onRetry={() => void retryLoad()} />
+        ) : !data ? (
           <LoadingState rows={4} />
         ) : data.items.length === 0 ? (
           <EmptyState title="Belum ada menu" text="Buat menu pertama dengan permission read:menu." />

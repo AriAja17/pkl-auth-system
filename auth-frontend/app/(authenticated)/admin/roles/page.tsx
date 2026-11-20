@@ -13,6 +13,7 @@ import {
   ConfirmDialog,
   Drawer,
   EmptyState,
+  ErrorState,
   Field,
   Input,
   LoadingState,
@@ -38,6 +39,7 @@ export default function RolesPage() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [data, setData] = useState<Page<RoleDetail> | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [permissions, setPermissions] = useState<PermissionView[]>([]);
   const [catalogState, setCatalogState] = useState<CatalogState>('loading');
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -54,11 +56,11 @@ export default function RolesPage() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    setData(
-      await apiPage<RoleDetail>(
-        `/admin/roles?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
-      ),
+    const result = await apiPage<RoleDetail>(
+      `/admin/roles?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
     );
+    setData(result);
+    setLoadError('');
   }, [page, query]);
 
   const loadCatalog = useCallback(async () => {
@@ -80,6 +82,7 @@ export default function RolesPage() {
         if (active) await load();
       } catch (err) {
         if (!active || handleUnauthorized(err, router)) return;
+        setLoadError(apiErrorText(err, 'Gagal memuat role.'));
         setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat role.') });
       }
     })();
@@ -87,6 +90,17 @@ export default function RolesPage() {
       active = false;
     };
   }, [load, router]);
+
+  async function retryLoad() {
+    setLoadError('');
+    setData(null);
+    try {
+      await load();
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setLoadError(apiErrorText(err, 'Gagal memuat role.'));
+    }
+  }
 
   useEffect(() => {
     void (async () => {
@@ -230,7 +244,9 @@ export default function RolesPage() {
           <Button type="submit" variant="secondary">Cari</Button>
         </form>
 
-        {!data ? (
+        {loadError ? (
+          <ErrorState message={loadError} onRetry={() => void retryLoad()} />
+        ) : !data ? (
           <LoadingState rows={5} />
         ) : data.items.length === 0 ? (
           <EmptyState title="Belum ada role" text="Tidak ada role yang cocok." />

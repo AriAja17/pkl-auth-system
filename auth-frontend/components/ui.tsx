@@ -145,6 +145,21 @@ export function RowMenu({
       if (event.key === 'Escape') {
         setOpen(false);
         triggerRef.current?.focus();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const menuItems = menuRef.current?.querySelectorAll<HTMLElement>(
+        '[role="menuitem"]',
+      );
+      if (!menuItems || menuItems.length === 0) return;
+      const first = menuItems[0];
+      const last = menuItems[menuItems.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
     };
     // The popover is position:fixed, so it would otherwise stay behind while
@@ -153,6 +168,8 @@ export function RowMenu({
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
     window.addEventListener('scroll', onScroll, true);
+    // Move focus into the menu so Tab/Shift+Tab and Escape work immediately.
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
@@ -177,6 +194,7 @@ export function RowMenu({
           <div
             ref={menuRef}
             role="menu"
+            aria-label="Aksi baris"
             style={{ top: position.top, left: position.left }}
             className="fixed z-[55] w-44 rounded-md border border-border-subtle bg-surface p-1 shadow-2"
           >
@@ -187,6 +205,7 @@ export function RowMenu({
                 role="menuitem"
                 onClick={() => {
                   setOpen(false);
+                  triggerRef.current?.focus();
                   item.onClick();
                 }}
                 className={cx(
