@@ -2,17 +2,29 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api, apiPage, ApiError, clearToken } from '@/lib/api';
+import { api, apiPage } from '@/lib/api';
 import type { Page, PermissionView } from '@/lib/api-types';
 import { useAuth } from '@/lib/auth-context';
+import { isSystemActor } from '@/lib/auth-helpers';
+import { apiErrorText, handleUnauthorized } from '@/lib/errors';
 import {
+  Badge,
+  Button,
+  Checkbox,
   ConfirmDialog,
+  Drawer,
   EmptyState,
+  Field,
+  Input,
   LoadingState,
   Pagination,
+  Table,
+  Td,
+  Th,
   Toast,
   type ToastState,
-} from '../_components/ui';
+} from '@/components/ui';
+import PageHeader from '@/components/page-header';
 
 type Drift = { orphan: string[]; unregistered: string[] };
 type FormState = { key: string; description: string; isProtected: boolean };
@@ -22,9 +34,8 @@ const CANONICAL = /^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$/;
 
 export default function PermissionsPage() {
   const { has, me } = useAuth();
+  const systemActor = isSystemActor(me);
   const router = useRouter();
-  const isSystemActor = Boolean(me?.roles?.some((role) => role.isSystem));
-
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
@@ -40,6 +51,7 @@ export default function PermissionsPage() {
   } | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -57,14 +69,8 @@ export default function PermissionsPage() {
       try {
         if (active) await load();
       } catch (err) {
-        if (active) {
-          if (err instanceof ApiError && err.status === 401) {
-            clearToken();
-            router.replace('/login');
-          } else {
-            setToast({ type: 'error', text: err instanceof Error ? err.message : 'Gagal memuat' });
-          }
-        }
+        if (!active || handleUnauthorized(err, router)) return;
+        setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat katalog permission.') });
       }
     })();
     return () => {
@@ -72,32 +78,20 @@ export default function PermissionsPage() {
     };
   }, [load, router]);
 
-  function handleError(err: unknown) {
-    if (err instanceof ApiError) {
-      if (err.status === 401) {
-        clearToken();
-        router.replace('/login');
-        return;
-      }
-      if (err.status === 403) {
-        setToast({ type: 'error', text: 'Anda tidak punya izin untuk aksi ini' });
-        return;
-      }
-      if (err.status === 409) {
-        setToast({ type: 'error', text: 'Permission key sudah terdaftar' });
-        return;
-      }
-    }
-    setToast({ type: 'error', text: err instanceof Error ? err.message : 'Terjadi kesalahan' });
+  function reportError(err: unknown) {
+    if (handleUnauthorized(err, router)) return;
+    setToast({ type: 'error', text: apiErrorText(err) });
   }
 
   function openCreate() {
     setEditingId(null);
+    setKeyError('');
     setForm({ ...emptyForm });
   }
 
   function openEdit(permission: PermissionView) {
     setEditingId(permission.id);
+    setKeyError('');
     setForm({
       key: permission.key,
       description: permission.description ?? '',
@@ -105,11 +99,10 @@ export default function PermissionsPage() {
     });
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit() {
     if (!form) return;
     if (!editingId && !CANONICAL.test(form.key)) {
-      setToast({ type: 'error', text: 'Key harus berformat action:resource' });
+      setKeyError('Key harus berformat action:resource');
       return;
     }
     setBusy(true);
@@ -119,7 +112,7 @@ export default function PermissionsPage() {
           method: 'PATCH',
           body: {
             description: form.description || null,
-            ...(isSystemActor ? { isProtected: form.isProtected } : {}),
+            ...(systemActor ? { isProtected: form.isProtected } : {}),
           },
         });
       } else {
@@ -128,7 +121,7 @@ export default function PermissionsPage() {
           body: {
             key: form.key,
             description: form.description || undefined,
-            ...(isSystemActor ? { isProtected: form.isProtected } : {}),
+            ...(systemActor ? { isProtected: form.isProtected } : {}),
           },
         });
       }
@@ -137,7 +130,7 @@ export default function PermissionsPage() {
       setEditingId(null);
       await load();
     } catch (err) {
-      handleError(err);
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -157,7 +150,7 @@ export default function PermissionsPage() {
             setToast({ type: 'ok', text: 'Permission dihapus' });
             await load();
           } catch (err) {
-            handleError(err);
+            reportError(err);
           }
         })();
       },
@@ -165,7 +158,7 @@ export default function PermissionsPage() {
   }
 
   if (!has('read:permission')) {
-    return <p className="p-6 text-red-600">Anda tidak memiliki akses read:permission.</p>;
+    return <EmptyState title="Tidak ada akses" text="Anda tidak memiliki izin read:permission." />;
   }
 
   const driftCount = drift ? drift.orphan.length + drift.unregistered.length : 0;
@@ -175,160 +168,165 @@ export default function PermissionsPage() {
       <Toast toast={toast} onClose={() => setToast(null)} />
       {dialog && <ConfirmDialog {...dialog} onCancel={() => setDialog(null)} />}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Permission</h1>
-          <p className="text-sm text-gray-500">
-            Katalog permission kanonik `action:resource` dari database.
-          </p>
-        </div>
-        {has('create:permission') && (
-          <button onClick={openCreate} className="rounded bg-blue-600 px-3 py-2 text-sm text-white">
-            Tambah permission
-          </button>
-        )}
-      </div>
+      <PageHeader
+        title="Permissions"
+        description={
+          <>
+            Katalog permission kanonik{' '}
+            <code className="font-mono text-xs">action:resource</code>.
+          </>
+        }
+        action={
+          has('create:permission') ? (
+            <Button onClick={openCreate}>Tambah permission</Button>
+          ) : undefined
+        }
+      />
 
       {drift && driftCount > 0 && (
-        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
+        <div role="status" className="rounded-md border border-warning bg-warning-surface p-4 text-sm text-warning">
           <p className="font-semibold">Drift terdeteksi ({driftCount})</p>
           {drift.orphan.length > 0 && (
-            <p className="mt-1">Tanpa endpoint: {drift.orphan.join(', ')}</p>
+            <p className="mt-1">
+              Tanpa endpoint: <span className="font-mono">{drift.orphan.join(', ')}</span>
+            </p>
           )}
           {drift.unregistered.length > 0 && (
-            <p className="mt-1">Endpoint tanpa permission: {drift.unregistered.join(', ')}</p>
+            <p className="mt-1">
+              Endpoint tanpa permission: <span className="font-mono">{drift.unregistered.join(', ')}</span>
+            </p>
           )}
         </div>
       )}
 
-      {form && (
-        <form onSubmit={submit} className="space-y-3 rounded-xl bg-white p-4 shadow">
-          <h2 className="font-semibold">{editingId ? 'Edit permission' : 'Permission baru'}</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input
-              placeholder="action:resource"
-              value={form.key}
-              disabled={Boolean(editingId)}
-              onChange={(e) => setForm({ ...form, key: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm disabled:bg-gray-100"
-            />
-            <input
-              placeholder="Deskripsi"
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-          </div>
-          {isSystemActor && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={form.isProtected}
-                onChange={(e) => setForm({ ...form, isProtected: e.target.checked })}
-              />
-              Protected
-            </label>
-          )}
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
-            >
-              {busy ? 'Menyimpan...' : 'Simpan'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setForm(null)}
-              className="rounded border border-gray-300 px-3 py-1 text-sm"
-            >
-              Batal
-            </button>
-          </div>
-        </form>
-      )}
-
-      <div className="rounded-xl bg-white p-4 shadow">
+      <div className="rounded-md border border-border-subtle bg-surface p-4">
         <form
-          onSubmit={(e) => {
-            e.preventDefault();
+          onSubmit={(event) => {
+            event.preventDefault();
             setPage(1);
             setQuery(search);
           }}
-          className="mb-3 flex gap-2"
+          className="mb-4 flex flex-wrap gap-2"
         >
-          <input
+          <Input
+            aria-label="Cari permission key"
             placeholder="Cari permission key"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded border border-gray-300 p-2 text-sm"
+            onChange={(event) => setSearch(event.target.value)}
+            className="max-w-sm"
           />
-          <button className="rounded bg-gray-800 px-3 py-2 text-sm text-white">Cari</button>
+          <Button type="submit" variant="secondary">Cari</Button>
         </form>
 
         {!data ? (
-          <LoadingState />
+          <LoadingState rows={5} />
         ) : data.items.length === 0 ? (
-          <EmptyState text="Belum ada permission." />
+          <EmptyState title="Belum ada permission" text="Tidak ada permission yang cocok." />
         ) : (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b text-gray-500">
-                    <th className="py-2">Key</th>
-                    <th className="py-2">Deskripsi</th>
-                    <th className="py-2">Status</th>
-                    <th className="py-2">Role</th>
-                    <th className="py-2 text-right">Aksi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.items.map((permission) => (
-                    <tr key={permission.id} className="border-b last:border-0">
-                      <td className="py-2 font-medium">{permission.key}</td>
-                      <td className="py-2 text-gray-500">{permission.description ?? '-'}</td>
-                      <td className="py-2">
-                        {permission.isProtected ? (
-                          <span className="rounded bg-amber-100 px-2 py-1 text-xs text-amber-700">
-                            protected
-                          </span>
-                        ) : (
-                          <span className="text-gray-400">biasa</span>
+            <Table>
+              <thead>
+                <tr>
+                  <Th>Key</Th>
+                  <Th>Deskripsi</Th>
+                  <Th>Status</Th>
+                  <Th>Role</Th>
+                  <Th className="text-right">Aksi</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((permission) => (
+                  <tr key={permission.id} className="hover:bg-canvas">
+                    <Td className="font-mono text-xs font-medium">{permission.key}</Td>
+                    <Td className="text-text-muted">{permission.description ?? '-'}</Td>
+                    <Td>
+                      <Badge variant={permission.isProtected ? 'warning' : 'neutral'}>
+                        {permission.isProtected ? 'protected' : 'biasa'}
+                      </Badge>
+                    </Td>
+                    <Td className="text-xs text-text-secondary">
+                      {permission.roles.join(', ') || '-'}
+                    </Td>
+                    <Td>
+                      <div className="flex items-center justify-end gap-2">
+                        {has('update:permission') && (
+                          <Button variant="link" size="sm" onClick={() => openEdit(permission)}>
+                            Edit
+                          </Button>
                         )}
-                      </td>
-                      <td className="py-2">{permission.roles.join(', ') || '-'}</td>
-                      <td className="py-2 text-right">
-                        <div className="flex flex-wrap justify-end gap-3">
-                          {has('update:permission') && (
-                            <button
-                              onClick={() => openEdit(permission)}
-                              className="text-blue-600 underline"
-                            >
-                              Edit
-                            </button>
-                          )}
-                          {has('delete:permission') && (
-                            <button
-                              onClick={() => requestDelete(permission)}
-                              className="text-red-600 underline"
-                            >
-                              Hapus
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-3">
+                        {has('delete:permission') && (
+                          <Button
+                            variant="link"
+                            size="sm"
+                            className="text-danger"
+                            onClick={() => requestDelete(permission)}
+                          >
+                            Hapus
+                          </Button>
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            <div className="mt-4">
               <Pagination page={page} limit={10} total={data.total} onPage={setPage} />
             </div>
           </>
         )}
       </div>
+
+      <Drawer
+        open={Boolean(form)}
+        onClose={() => setForm(null)}
+        title={editingId ? 'Edit permission' : 'Permission baru'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setForm(null)}>Batal</Button>
+            <Button onClick={() => void submit()} loading={busy}>Simpan</Button>
+          </>
+        }
+      >
+        {form && (
+          <div className="space-y-4">
+            <Field
+              label="Key (action:resource)"
+              htmlFor="permission-key"
+              error={keyError}
+              hint="Contoh: read:project"
+              required
+            >
+              <Input
+                id="permission-key"
+                value={form.key}
+                disabled={Boolean(editingId)}
+                invalid={Boolean(keyError)}
+                className="font-mono"
+                onChange={(event) => {
+                  setForm({ ...form, key: event.target.value });
+                  setKeyError('');
+                }}
+              />
+            </Field>
+            <Field label="Deskripsi" htmlFor="permission-description">
+              <Input
+                id="permission-description"
+                value={form.description}
+                onChange={(event) => setForm({ ...form, description: event.target.value })}
+              />
+            </Field>
+            {systemActor && (
+              <Checkbox
+                label="Protected"
+                hint="Hanya actor sistem yang dapat mengubah permission protected"
+                checked={form.isProtected}
+                onChange={(event) => setForm({ ...form, isProtected: event.target.checked })}
+              />
+            )}
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }

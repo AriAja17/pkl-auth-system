@@ -205,7 +205,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
 );
 
 export type CheckboxProps = InputHTMLAttributes<HTMLInputElement> & {
-  label: string;
+  label: ReactNode;
   hint?: string;
 };
 

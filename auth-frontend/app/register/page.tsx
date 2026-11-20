@@ -3,37 +3,45 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
+import { apiErrorText } from '@/lib/errors';
+import { Button, Card, Field, Input } from '@/components/ui';
+
+type FieldErrors = {
+  email?: string;
+  username?: string;
+  password?: string;
+};
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [apiError, setApiError] = useState('');
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  function validate(): string | null {
-    if (!email.trim()) return 'Email wajib diisi';
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
-      return 'Format email tidak valid. Email harus mengandung @ dan domain, contoh: nama@gmail.com';
+  function validate(): FieldErrors {
+    const next: FieldErrors = {};
+    if (!email.trim()) next.email = 'Email wajib diisi';
+    else if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
+      next.email =
+        'Format email tidak valid. Contoh: nama@gmail.com';
     }
     if (username.trim() && !/^[a-z0-9_]{3,30}$/.test(username.trim())) {
-      return 'Username harus 3-30 karakter [a-z0-9_]';
+      next.username = 'Username harus 3-30 karakter [a-z0-9_]';
     }
-    if (password.length < 6) return 'Password minimal 6 karakter';
-    return null;
+    if (password.length < 6) next.password = 'Password minimal 6 karakter';
+    return next;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const found = validate();
+    setErrors(found);
+    setApiError('');
+    if (Object.keys(found).length > 0) return;
 
-    const problem = validate();
-    if (problem) {
-      setError(problem);
-      return;
-    }
-
-    setError('');
     setLoading(true);
     try {
       const name = username.trim();
@@ -47,76 +55,119 @@ export default function RegisterPage() {
       });
       setSuccess(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Terjadi kesalahan');
+      setApiError(apiErrorText(err, 'Gagal membuat akun.'));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-      <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow text-gray-900">
-        <h1 className="text-2xl font-bold mb-1">Daftar</h1>
-        <p className="text-sm text-gray-500 mb-4">
-          Akun baru belum punya akses sampai admin memberi role.
-        </p>
-
+    <main className="flex min-h-screen items-center justify-center bg-canvas p-3 sm:p-4">
+      <Card
+        title="Daftar"
+        description="Akun baru belum punya akses sampai admin memberi role."
+        className="w-full max-w-[400px] p-6"
+      >
         {success ? (
-          <div className="space-y-3">
-            <p className="rounded border border-green-300 bg-green-50 p-3 text-sm text-green-700">
-              Akun berhasil dibuat. Silakan login, lalu minta admin memberi role.
+          <div className="mt-5 space-y-3">
+            <p
+              role="status"
+              className="rounded-sm border border-success bg-success-surface p-3 text-sm text-success"
+            >
+              Akun berhasil dibuat. Silakan masuk, lalu minta admin memberi role.
             </p>
-            <Link href="/login" className="text-blue-600 underline text-sm">
+            <Link
+              href="/login"
+              className="inline-block text-sm text-brand-primary hover:underline"
+            >
               Ke halaman login
             </Link>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} noValidate className="space-y-3">
-            <input
-              type="email"
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border border-gray-300 p-2"
-            />
-            <input
-              type="text"
-              placeholder="Username (opsional)"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded border border-gray-300 p-2"
-            />
-            <input
-              type="password"
-              placeholder="Password (min. 6 karakter)"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded border border-gray-300 p-2"
-            />
-            {error && (
+          <form onSubmit={handleSubmit} noValidate className="mt-5 space-y-3">
+            <Field label="Email" htmlFor="register-email" error={errors.email} required>
+              <Input
+                id="register-email"
+                type="email"
+                autoComplete="email"
+                value={email}
+                invalid={Boolean(errors.email)}
+                aria-describedby={errors.email ? 'register-email-error' : undefined}
+                onChange={(event) => {
+                  setEmail(event.target.value);
+                  setErrors((previous) => ({ ...previous, email: undefined }));
+                }}
+              />
+            </Field>
+
+            <Field
+              label="Username (opsional)"
+              htmlFor="register-username"
+              error={errors.username}
+              hint="3-30 karakter, huruf kecil, angka, atau underscore"
+            >
+              <Input
+                id="register-username"
+                value={username}
+                invalid={Boolean(errors.username)}
+                aria-describedby={errors.username ? 'register-username-error' : undefined}
+                onChange={(event) => {
+                  setUsername(event.target.value);
+                  setErrors((previous) => ({ ...previous, username: undefined }));
+                }}
+              />
+            </Field>
+
+            <Field
+              label="Password"
+              htmlFor="register-password"
+              error={errors.password}
+              required
+            >
+              <Input
+                id="register-password"
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                invalid={Boolean(errors.password)}
+                aria-describedby={errors.password ? 'register-password-error' : undefined}
+                onChange={(event) => {
+                  setPassword(event.target.value);
+                  setErrors((previous) => ({ ...previous, password: undefined }));
+                }}
+              />
+            </Field>
+
+            {apiError && (
               <div
                 role="alert"
-                className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700"
+                className="rounded-sm border border-danger bg-danger-surface p-3 text-sm text-danger"
               >
-                {error}
+                {apiError}
+                <button
+                  type="button"
+                  onClick={() => setApiError('')}
+                  aria-label="Tutup pesan error"
+                  className="ml-2 underline"
+                >
+                  Tutup
+                </button>
               </div>
             )}
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded bg-blue-600 p-2 text-white disabled:opacity-50"
-            >
+
+            <Button type="submit" loading={loading} className="w-full">
               {loading ? 'Memproses...' : 'Daftar'}
-            </button>
-            <p className="text-sm text-gray-500">
+            </Button>
+
+            <p className="text-center text-sm text-text-muted">
               Sudah punya akun?{' '}
-              <Link href="/login" className="text-blue-600 underline">
+              <Link href="/login" className="text-brand-primary hover:underline">
                 Login
               </Link>
             </p>
           </form>
         )}
-      </div>
+      </Card>
     </main>
   );
 }

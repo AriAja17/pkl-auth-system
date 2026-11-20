@@ -2,16 +2,26 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api, apiPage, ApiError, clearToken } from '@/lib/api';
+import { api, apiPage } from '@/lib/api';
 import type { MenuNode, Page, PermissionView } from '@/lib/api-types';
 import { useAuth } from '@/lib/auth-context';
+import { apiErrorText, handleUnauthorized } from '@/lib/errors';
 import {
+  Badge,
+  Button,
+  Checkbox,
   ConfirmDialog,
+  Drawer,
   EmptyState,
+  Field,
+  Input,
   LoadingState,
+  Select,
   Toast,
   type ToastState,
-} from '../_components/ui';
+} from '@/components/ui';
+import PageHeader from '@/components/page-header';
+import PermissionPicker, { type CatalogState } from '@/components/permission-picker';
 
 type FormState = {
   name: string;
@@ -65,6 +75,7 @@ export default function MenusPage() {
   const router = useRouter();
   const [data, setData] = useState<Page<MenuNode> | null>(null);
   const [permissions, setPermissions] = useState<PermissionView[]>([]);
+  const [catalogState, setCatalogState] = useState<CatalogState>('loading');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [dialog, setDialog] = useState<{
     title: string;
@@ -82,20 +93,26 @@ export default function MenusPage() {
     setData(await apiPage<MenuNode>('/admin/menus?page=1&limit=100'));
   }, []);
 
+  const loadCatalog = useCallback(async () => {
+    try {
+      const result = await apiPage<PermissionView>('/admin/permissions?page=1&limit=100');
+      setPermissions(result.items);
+      setCatalogState(result.items.length === 0 ? 'empty' : 'ready');
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setPermissions([]);
+      setCatalogState('error');
+    }
+  }, [router]);
+
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
         if (active) await load();
       } catch (err) {
-        if (active) {
-          if (err instanceof ApiError && err.status === 401) {
-            clearToken();
-            router.replace('/login');
-          } else {
-            setToast({ type: 'error', text: err instanceof Error ? err.message : 'Gagal memuat' });
-          }
-        }
+        if (!active || handleUnauthorized(err, router)) return;
+        setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat menu.') });
       }
     })();
     return () => {
@@ -104,19 +121,10 @@ export default function MenusPage() {
   }, [load, router]);
 
   useEffect(() => {
-    let active = true;
     void (async () => {
-      try {
-        const result = await apiPage<PermissionView>('/admin/permissions?page=1&limit=100');
-        if (active) setPermissions(result.items);
-      } catch {
-        // Picker can be empty; the tree still renders.
-      }
+      await loadCatalog();
     })();
-    return () => {
-      active = false;
-    };
-  }, []);
+  }, [loadCatalog]);
 
   const flat = useMemo(() => (data ? flatten(data.items) : []), [data]);
   const forbiddenParents = useMemo(
@@ -124,6 +132,7 @@ export default function MenusPage() {
     [editingId, data],
   );
 
+  // Non-authoritative hint only. Backend visibleMenus() remains authoritative.
   const visibleIds = useMemo(() => {
     const visible = new Set<string>();
     if (!data) return visible;
@@ -133,7 +142,6 @@ export default function MenusPage() {
         visible.add(node.id);
       }
     }
-    // A child is hidden when any ancestor is hidden.
     const byId = new Map(flat.map((node) => [node.id, node]));
     for (const id of [...visible]) {
       let parentId = byId.get(id)?.parentId ?? null;
@@ -150,23 +158,9 @@ export default function MenusPage() {
     return visible;
   }, [data, flat, canonicalPermissions]);
 
-  function handleError(err: unknown) {
-    if (err instanceof ApiError) {
-      if (err.status === 401) {
-        clearToken();
-        router.replace('/login');
-        return;
-      }
-      if (err.status === 403) {
-        setToast({ type: 'error', text: 'Anda tidak punya izin untuk aksi ini' });
-        return;
-      }
-      if (err.status === 409) {
-        setToast({ type: 'error', text: 'Data sudah dipakai' });
-        return;
-      }
-    }
-    setToast({ type: 'error', text: err instanceof Error ? err.message : 'Terjadi kesalahan' });
+  function reportError(err: unknown) {
+    if (handleUnauthorized(err, router)) return;
+    setToast({ type: 'error', text: apiErrorText(err) });
   }
 
   function openCreate(parentId = '') {
@@ -175,15 +169,17 @@ export default function MenusPage() {
   }
 
   async function openEdit(node: MenuNode) {
-    // Backend returns permission KEYS in MenuNode; the API expects permission IDs.
     let catalog = permissions;
     if (catalog.length === 0) {
       try {
         const result = await apiPage<PermissionView>('/admin/permissions?page=1&limit=100');
         catalog = result.items;
         setPermissions(catalog);
-      } catch {
+        setCatalogState(catalog.length === 0 ? 'empty' : 'ready');
+      } catch (err) {
+        if (handleUnauthorized(err, router)) return;
         catalog = [];
+        setCatalogState('error');
       }
     }
     const idsByKey = new Map(catalog.map((permission) => [permission.key, permission.id]));
@@ -202,9 +198,8 @@ export default function MenusPage() {
     });
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form) return;
+  async function submit() {
+    if (!form || catalogState !== 'ready') return;
     if (form.url && !URL_PATTERN.test(form.url)) {
       setToast({ type: 'error', text: 'URL harus diawali /' });
       return;
@@ -241,7 +236,7 @@ export default function MenusPage() {
       setEditingId(null);
       await load();
     } catch (err) {
-      handleError(err);
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -250,7 +245,7 @@ export default function MenusPage() {
   function requestDelete(node: MenuNode) {
     setDialog({
       title: 'Hapus menu?',
-      text: `Menu "${node.name}" akan dihapus. Anak menjadi root.`,
+      text: `Menu ‘${node.name}’ akan dihapus. Anak menjadi root.`,
       confirmLabel: 'Ya, hapus',
       danger: true,
       onConfirm: () => {
@@ -261,7 +256,7 @@ export default function MenusPage() {
             setToast({ type: 'ok', text: 'Menu dihapus' });
             await load();
           } catch (err) {
-            handleError(err);
+            reportError(err);
           }
         })();
       },
@@ -272,7 +267,7 @@ export default function MenusPage() {
     try {
       setDetail(await api<MenuNode>(`/admin/menus/${node.id}`));
     } catch (err) {
-      handleError(err);
+      reportError(err);
     }
   }
 
@@ -291,192 +286,226 @@ export default function MenusPage() {
 
   function renderTree(nodes: MenuNode[], depth = 0): React.ReactNode {
     return nodes.map((node) => (
-      <div key={node.id} className="space-y-2">
-        <div
-          className="flex flex-wrap items-center justify-between gap-2 rounded border border-gray-200 p-3"
-          style={{ marginLeft: depth * 20 }}
-        >
-          <div>
-            <p className="font-medium">{node.name}</p>
-            <p className="text-xs text-gray-500">
-              {node.url ?? 'group'} · urutan {node.order} ·{' '}
-              <span className={visibleIds.has(node.id) ? 'text-green-700' : 'text-amber-600'}>
+      <div key={node.id} className={depth > 0 ? 'ml-3 border-l border-border-subtle pl-3' : ''}>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface p-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-text-primary">{node.name}</p>
+            <p className="text-xs text-text-muted">
+              <span className="font-mono">{node.url ?? 'group'}</span> · urutan {node.order} ·{' '}
+              <span className={visibleIds.has(node.id) ? 'text-success' : 'text-warning'}>
                 {visibleIds.has(node.id) ? 'terlihat' : 'tersembunyi'}
               </span>
             </p>
-            <p className="text-xs text-gray-400">
-              permission: {node.permissions.join(', ') || 'tidak ada'}
+            <p className="mt-0.5 text-xs text-text-muted">
+              permission:{' '}
+              <span className="font-mono">
+                {node.permissions.join(', ') || 'tidak ada'}
+              </span>
             </p>
           </div>
-          <div className="flex flex-wrap gap-3 text-sm">
-            <button onClick={() => showDetail(node)} className="text-blue-600 underline">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="link" size="sm" onClick={() => void showDetail(node)}>
               Detail
-            </button>
+            </Button>
             {has('create:menu') && (
-              <button onClick={() => openCreate(node.id)} className="text-blue-600 underline">
+              <Button variant="link" size="sm" onClick={() => openCreate(node.id)}>
                 Submenu
-              </button>
+              </Button>
             )}
             {has('update:menu') && (
-              <button onClick={() => openEdit(node)} className="text-blue-600 underline">
+              <Button variant="link" size="sm" onClick={() => void openEdit(node)}>
                 Edit
-              </button>
+              </Button>
             )}
             {has('delete:menu') && (
-              <button onClick={() => requestDelete(node)} className="text-red-600 underline">
+              <Button
+                variant="link"
+                size="sm"
+                className="text-danger"
+                onClick={() => requestDelete(node)}
+              >
                 Hapus
-              </button>
+              </Button>
             )}
           </div>
         </div>
-        {node.children.length > 0 && renderTree(node.children, depth + 1)}
+        {node.children.length > 0 && (
+          <div className="mt-2 space-y-2">{renderTree(node.children, depth + 1)}</div>
+        )}
       </div>
     ));
   }
 
   if (!has('read:menu')) {
-    return <p className="p-6 text-red-600">Anda tidak memiliki akses read:menu.</p>;
+    return <EmptyState title="Tidak ada akses" text="Anda tidak memiliki izin read:menu." />;
   }
+
+  const selectedPermissionIds = form?.permissionIds ?? [];
+  const selectedKeys = selectedPermissionIds
+    .map((id) => permissions.find((permission) => permission.id === id)?.key)
+    .filter((key): key is string => Boolean(key));
+  const saveDisabled = busy || catalogState !== 'ready';
 
   return (
     <div className="space-y-4">
       <Toast toast={toast} onClose={() => setToast(null)} />
       {dialog && <ConfirmDialog {...dialog} onCancel={() => setDialog(null)} />}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Menu</h1>
-          <p className="text-sm text-gray-500">
-            Struktur menu, hierarchy, dan permission mapping (ANY-of).
-          </p>
-        </div>
-        {has('create:menu') && (
-          <button onClick={() => openCreate()} className="rounded bg-blue-600 px-3 py-2 text-sm text-white">
-            Tambah menu
-          </button>
-        )}
-      </div>
+      <PageHeader
+        title="Menu"
+        description="Struktur menu, hierarchy, dan permission mapping (ANY-of)."
+        action={
+          has('create:menu') ? (
+            <Button onClick={() => openCreate()}>Tambah menu</Button>
+          ) : undefined
+        }
+      />
 
-      {form && (
-        <form onSubmit={submit} className="space-y-3 rounded-xl bg-white p-4 shadow">
-          <h2 className="font-semibold">{editingId ? 'Edit menu' : 'Menu baru'}</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input
-              placeholder="Nama"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-            <input
-              placeholder="URL (/path, kosong untuk group)"
-              value={form.url}
-              onChange={(e) => setForm({ ...form, url: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-            <input
-              placeholder="Icon (pi pi-users)"
-              value={form.icon}
-              onChange={(e) => setForm({ ...form, icon: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-            <input
-              type="number"
-              placeholder="Urutan"
-              value={form.order}
-              onChange={(e) => setForm({ ...form, order: Number(e.target.value) })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-            <select
-              value={form.parentId}
-              onChange={(e) => setForm({ ...form, parentId: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            >
-              <option value="">Tidak ada parent</option>
-              {flat
-                .filter((node) => !forbiddenParents.has(node.id))
-                .map((node) => (
-                  <option key={node.id} value={node.id}>
-                    {node.name}
-                  </option>
-                ))}
-            </select>
-            <input
-              placeholder="Deskripsi"
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-          </div>
+      <p className="text-xs text-text-muted">
+        Status ‘terlihat’ adalah petunjuk UI, bukan aturan akses. Backend tetap menentukan menu yang terlihat.
+      </p>
 
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.isActive}
-              onChange={(e) => setForm({ ...form, isActive: e.target.checked })}
-            />
-            Aktif
-          </label>
-
-          <div>
-            <p className="mb-1 text-sm text-gray-500">Permission (ANY-of)</p>
-            <div className="grid max-h-56 gap-1 overflow-y-auto sm:grid-cols-2">
-              {permissions.map((permission) => (
-                <label key={permission.id} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={form.permissionIds.includes(permission.id)}
-                    onChange={() => togglePermission(permission.id)}
-                  />
-                  {permission.key}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
-            >
-              {busy ? 'Menyimpan...' : 'Simpan'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setForm(null)}
-              className="rounded border border-gray-300 px-3 py-1 text-sm"
-            >
-              Batal
-            </button>
-          </div>
-        </form>
-      )}
-
-      {detail && (
-        <div className="rounded-xl bg-white p-4 shadow">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Detail menu</h2>
-            <button onClick={() => setDetail(null)} className="text-sm text-gray-500 underline">
-              Tutup
-            </button>
-          </div>
-          <p className="mt-2 text-sm">Nama: {detail.name}</p>
-          <p className="text-sm">URL: {detail.url ?? '-'}</p>
-          <p className="text-sm">Icon: {detail.icon ?? '-'}</p>
-          <p className="text-sm">Parent: {detail.parentId ?? '-'}</p>
-          <p className="text-sm">Permission: {detail.permissions.join(', ') || '-'}</p>
-        </div>
-      )}
-
-      <div className="rounded-xl bg-white p-4 shadow">
+      <div className="rounded-md border border-border-subtle bg-surface p-4">
         {!data ? (
-          <LoadingState />
+          <LoadingState rows={4} />
         ) : data.items.length === 0 ? (
-          <EmptyState text="Belum ada menu. Buat menu pertama dengan permission read:menu agar muncul di sidebar." />
+          <EmptyState title="Belum ada menu" text="Buat menu pertama dengan permission read:menu." />
         ) : (
           <div className="space-y-2">{renderTree(data.items)}</div>
         )}
       </div>
+
+      <Drawer
+        open={Boolean(form)}
+        onClose={() => setForm(null)}
+        title={editingId ? 'Edit menu' : 'Menu baru'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setForm(null)}>Batal</Button>
+            <Button onClick={() => void submit()} loading={busy} disabled={saveDisabled}>
+              Simpan
+            </Button>
+          </>
+        }
+      >
+        {form && (
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Nama" htmlFor="menu-name" required>
+                <Input
+                  id="menu-name"
+                  value={form.name}
+                  onChange={(event) => setForm({ ...form, name: event.target.value })}
+                />
+              </Field>
+              <Field label="URL (/path, kosong untuk group)" htmlFor="menu-url">
+                <Input
+                  id="menu-url"
+                  value={form.url}
+                  onChange={(event) => setForm({ ...form, url: event.target.value })}
+                />
+              </Field>
+              <Field label="Icon (pi pi-users)" htmlFor="menu-icon">
+                <Input
+                  id="menu-icon"
+                  value={form.icon}
+                  onChange={(event) => setForm({ ...form, icon: event.target.value })}
+                />
+              </Field>
+              <Field label="Urutan" htmlFor="menu-order">
+                <Input
+                  id="menu-order"
+                  type="number"
+                  value={form.order}
+                  onChange={(event) => setForm({ ...form, order: Number(event.target.value) })}
+                />
+              </Field>
+              <Field label="Parent" htmlFor="menu-parent">
+                <Select
+                  id="menu-parent"
+                  value={form.parentId}
+                  onChange={(event) => setForm({ ...form, parentId: event.target.value })}
+                >
+                  <option value="">Tidak ada parent</option>
+                  {flat
+                    .filter((node) => !forbiddenParents.has(node.id))
+                    .map((node) => (
+                      <option key={node.id} value={node.id}>
+                        {node.name}
+                      </option>
+                    ))}
+                </Select>
+              </Field>
+              <Field label="Deskripsi" htmlFor="menu-description">
+                <Input
+                  id="menu-description"
+                  value={form.description}
+                  onChange={(event) => setForm({ ...form, description: event.target.value })}
+                />
+              </Field>
+            </div>
+
+            <Checkbox
+              label="Aktif"
+              checked={form.isActive}
+              onChange={(event) => setForm({ ...form, isActive: event.target.checked })}
+            />
+
+            <PermissionPicker
+              permissions={permissions}
+              selectedKeys={selectedKeys}
+              onToggle={(key) => {
+                const id = permissions.find((permission) => permission.key === key)?.id;
+                if (id) togglePermission(id);
+              }}
+              state={catalogState}
+              onRetry={() => {
+                setCatalogState('loading');
+                void loadCatalog();
+              }}
+              hint="Semua permission yang dicentang akan mengganti mapping menu ini."
+            />
+          </div>
+        )}
+      </Drawer>
+
+      <Drawer
+        open={Boolean(detail)}
+        onClose={() => setDetail(null)}
+        title="Detail menu"
+        footer={
+          <Button variant="secondary" onClick={() => setDetail(null)}>Tutup</Button>
+        }
+      >
+        {detail && (
+          <dl className="space-y-3 text-sm">
+            <div>
+              <dt className="text-xs text-text-muted">Nama</dt>
+              <dd className="font-medium">{detail.name}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">URL</dt>
+              <dd className="font-mono">{detail.url ?? '-'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Icon</dt>
+              <dd className="font-mono">{detail.icon ?? '-'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Parent</dt>
+              <dd className="font-mono">{detail.parentId ?? '-'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Permission</dt>
+              <dd className="mt-1 flex flex-wrap gap-1">
+                {detail.permissions.map((key) => (
+                  <Badge key={key} variant="neutral"><span className="font-mono">{key}</span></Badge>
+                ))}
+              </dd>
+            </div>
+          </dl>
+        )}
+      </Drawer>
     </div>
   );
 }

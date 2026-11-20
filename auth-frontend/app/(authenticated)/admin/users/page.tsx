@@ -2,17 +2,28 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api, apiPage, ApiError, clearToken } from '@/lib/api';
+import { api, apiPage } from '@/lib/api';
 import type { Page, RoleDetail, UserView } from '@/lib/api-types';
 import { useAuth } from '@/lib/auth-context';
+import { apiErrorText, handleUnauthorized } from '@/lib/errors';
 import {
+  Badge,
+  Button,
+  Checkbox,
   ConfirmDialog,
+  Drawer,
   EmptyState,
+  Field,
+  Input,
   LoadingState,
   Pagination,
+  Table,
+  Td,
+  Th,
   Toast,
   type ToastState,
-} from '../_components/ui';
+} from '@/components/ui';
+import PageHeader from '@/components/page-header';
 
 type FormState = {
   username: string;
@@ -23,6 +34,8 @@ type FormState = {
   isActive: boolean;
   roleIds: string[];
 };
+
+type FieldErrors = Partial<Record<'email' | 'password', string>>;
 
 const emptyForm: FormState = {
   username: '',
@@ -35,7 +48,7 @@ const emptyForm: FormState = {
 };
 
 export default function UsersPage() {
-  const { has } = useAuth();
+  const { has, me } = useAuth();
   const router = useRouter();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
@@ -51,15 +64,17 @@ export default function UsersPage() {
     onConfirm: () => void;
   } | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
+  const [formErrors, setFormErrors] = useState<FieldErrors>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserView | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const result = await apiPage<UserView>(
-      `/admin/users?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
+    setData(
+      await apiPage<UserView>(
+        `/admin/users?page=${page}&limit=10&search=${encodeURIComponent(query)}`,
+      ),
     );
-    setData(result);
   }, [page, query]);
 
   useEffect(() => {
@@ -68,14 +83,8 @@ export default function UsersPage() {
       try {
         if (active) await load();
       } catch (err) {
-        if (active) {
-          if (err instanceof ApiError && err.status === 401) {
-            clearToken();
-            router.replace('/login');
-          } else {
-            setToast({ type: 'error', text: err instanceof Error ? err.message : 'Gagal memuat' });
-          }
-        }
+        if (!active || handleUnauthorized(err, router)) return;
+        setToast({ type: 'error', text: apiErrorText(err, 'Gagal memuat user.') });
       }
     })();
     return () => {
@@ -90,7 +99,7 @@ export default function UsersPage() {
         const result = await apiPage<RoleDetail>('/admin/roles?page=1&limit=100');
         if (active) setRoles(result.items.filter((role) => !role.isSystem));
       } catch {
-        // Role list is only used by the picker; the page still works without it.
+        // Role picker is optional; backend validation remains authoritative.
       }
     })();
     return () => {
@@ -98,32 +107,20 @@ export default function UsersPage() {
     };
   }, []);
 
-  function handleError(err: unknown) {
-    if (err instanceof ApiError) {
-      if (err.status === 401) {
-        clearToken();
-        router.replace('/login');
-        return;
-      }
-      if (err.status === 403) {
-        setToast({ type: 'error', text: 'Anda tidak punya izin untuk aksi ini' });
-        return;
-      }
-      if (err.status === 409) {
-        setToast({ type: 'error', text: 'Data sudah terdaftar / masih dipakai' });
-        return;
-      }
-    }
-    setToast({ type: 'error', text: err instanceof Error ? err.message : 'Terjadi kesalahan' });
+  function reportError(err: unknown) {
+    if (handleUnauthorized(err, router)) return;
+    setToast({ type: 'error', text: apiErrorText(err) });
   }
 
   function openCreate() {
     setEditingId(null);
+    setFormErrors({});
     setForm({ ...emptyForm });
   }
 
   function openEdit(user: UserView) {
     setEditingId(user.id);
+    setFormErrors({});
     setForm({
       username: user.username,
       name: user.name ?? '',
@@ -135,9 +132,16 @@ export default function UsersPage() {
     });
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit() {
     if (!form) return;
+    const found: FieldErrors = {};
+    if (!editingId && !form.email.trim()) found.email = 'Email wajib diisi';
+    if (!editingId && form.password.length < 6) {
+      found.password = 'Password minimal 6 karakter';
+    }
+    setFormErrors(found);
+    if (Object.keys(found).length > 0) return;
+
     setBusy(true);
     try {
       if (editingId) {
@@ -154,10 +158,6 @@ export default function UsersPage() {
           body: { roleIds: form.roleIds },
         });
       } else {
-        if (!form.email || form.password.length < 6) {
-          setToast({ type: 'error', text: 'Email wajib diisi dan password minimal 6 karakter' });
-          return;
-        }
         await api('/admin/users', {
           method: 'POST',
           body: {
@@ -175,7 +175,7 @@ export default function UsersPage() {
       setEditingId(null);
       await load();
     } catch (err) {
-      handleError(err);
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -190,7 +190,7 @@ export default function UsersPage() {
       setToast({ type: 'ok', text: user.isActive ? 'User dinonaktifkan' : 'User diaktifkan' });
       await load();
     } catch (err) {
-      handleError(err);
+      reportError(err);
     }
   }
 
@@ -208,7 +208,7 @@ export default function UsersPage() {
             setToast({ type: 'ok', text: 'User dihapus' });
             await load();
           } catch (err) {
-            handleError(err);
+            reportError(err);
           }
         })();
       },
@@ -219,7 +219,7 @@ export default function UsersPage() {
     try {
       setDetail(await api<UserView>(`/admin/users/${user.id}`));
     } catch (err) {
-      handleError(err);
+      reportError(err);
     }
   }
 
@@ -237,232 +237,310 @@ export default function UsersPage() {
   }
 
   if (!has('read:user')) {
-    return <p className="p-6 text-red-600">Anda tidak memiliki akses read:user.</p>;
+    return <EmptyState title="Tidak ada akses" text="Anda tidak memiliki izin read:user." />;
   }
+
+  const isFormOpen = Boolean(form);
 
   return (
     <div className="space-y-4">
       <Toast toast={toast} onClose={() => setToast(null)} />
       {dialog && <ConfirmDialog {...dialog} onCancel={() => setDialog(null)} />}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">User</h1>
-          <p className="text-sm text-gray-500">Kelola akun, multi-role, dan status aktif.</p>
-        </div>
-        {has('create:user') && (
-          <button
-            onClick={openCreate}
-            className="rounded bg-blue-600 px-3 py-2 text-sm text-white"
-          >
-            Tambah user
-          </button>
-        )}
-      </div>
+      <PageHeader
+        title="Users"
+        description="Kelola akun, multi-role, dan status aktif."
+        action={
+          has('create:user') ? (
+            <Button onClick={openCreate}>Tambah user</Button>
+          ) : undefined
+        }
+      />
 
-      {form && (
+      <div className="rounded-md border border-border-subtle bg-surface p-4">
         <form
-          onSubmit={submit}
-          className="space-y-3 rounded-xl bg-white p-4 shadow"
-        >
-          <h2 className="font-semibold">{editingId ? 'Edit user' : 'User baru'}</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <input
-              placeholder="Email"
-              type="email"
-              value={form.email}
-              disabled={Boolean(editingId)}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm disabled:bg-gray-100"
-            />
-            <input
-              placeholder="Username (opsional)"
-              value={form.username}
-              disabled={Boolean(editingId)}
-              onChange={(e) => setForm({ ...form, username: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm disabled:bg-gray-100"
-            />
-            <input
-              placeholder="Nama"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-            <input
-              placeholder="Telepon"
-              value={form.phone}
-              onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              className="rounded border border-gray-300 p-2 text-sm"
-            />
-            {!editingId && (
-              <input
-                placeholder="Password (min. 6)"
-                type="password"
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                className="rounded border border-gray-300 p-2 text-sm"
-              />
-            )}
-          </div>
-
-          {roles.length > 0 && (
-            <div>
-              <p className="mb-1 text-sm text-gray-500">Role</p>
-              <div className="grid gap-1 sm:grid-cols-3">
-                {roles.map((role) => (
-                  <label key={role.id} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={form.roleIds.includes(role.id)}
-                      onChange={() => toggleRole(role.id)}
-                    />
-                    {role.name}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {editingId && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={form.isActive}
-                onChange={(e) => setForm({ ...form, isActive: e.target.checked })}
-              />
-              Aktif
-            </label>
-          )}
-
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
-            >
-              {busy ? 'Menyimpan...' : 'Simpan'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setForm(null)}
-              className="rounded border border-gray-300 px-3 py-1 text-sm"
-            >
-              Batal
-            </button>
-          </div>
-        </form>
-      )}
-
-      {detail && (
-        <div className="rounded-xl bg-white p-4 shadow">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold">Detail user</h2>
-            <button onClick={() => setDetail(null)} className="text-sm text-gray-500 underline">
-              Tutup
-            </button>
-          </div>
-          <p className="mt-2 text-sm">Email: {detail.email}</p>
-          <p className="text-sm">Username: {detail.username}</p>
-          <p className="text-sm">Nama: {detail.name ?? '-'}</p>
-          <p className="text-sm">Status: {detail.isActive ? 'Aktif' : 'Nonaktif'}</p>
-          <p className="text-sm">
-            Role: {detail.roles.map((role) => role.name).join(', ') || 'Tanpa role'}
-          </p>
-        </div>
-      )}
-
-      <div className="rounded-xl bg-white p-4 shadow">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
+          onSubmit={(event) => {
+            event.preventDefault();
             setPage(1);
             setQuery(search);
           }}
-          className="mb-3 flex gap-2"
+          className="mb-4 flex flex-wrap gap-2"
         >
-          <input
+          <Input
+            aria-label="Cari email atau username"
             placeholder="Cari email/username"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded border border-gray-300 p-2 text-sm"
+            onChange={(event) => setSearch(event.target.value)}
+            className="max-w-sm"
           />
-          <button className="rounded bg-gray-800 px-3 py-2 text-sm text-white">Cari</button>
+          <Button type="submit" variant="secondary">
+            Cari
+          </Button>
         </form>
 
         {!data ? (
-          <LoadingState />
+          <LoadingState rows={5} />
         ) : data.items.length === 0 ? (
-          <EmptyState text="Belum ada user." />
+          <EmptyState title="Belum ada user" text="Tidak ada user yang cocok." />
         ) : (
           <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b text-gray-500">
-                    <th className="py-2">User</th>
-                    <th className="py-2">Role</th>
-                    <th className="py-2">Status</th>
-                    <th className="py-2 text-right">Aksi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.items.map((user) => (
-                    <tr key={user.id} className="border-b last:border-0">
-                      <td className="py-2">
+            <Table>
+              <thead>
+                <tr>
+                  <Th>User</Th>
+                  <Th>Access role</Th>
+                  <Th>Status</Th>
+                  <Th className="text-right">Aksi</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((user) => {
+                  const isSelf = user.id === me?.id;
+                  return (
+                    <tr key={user.id} className="hover:bg-canvas">
+                      <Td>
                         <p className="font-medium">{user.username}</p>
-                        <p className="text-xs text-gray-500">{user.email}</p>
-                      </td>
-                      <td className="py-2">
-                        {user.roles.map((role) => role.name).join(', ') || 'Tanpa role'}
-                      </td>
-                      <td className="py-2">
-                        <span
-                          className={
-                            user.isActive ? 'text-green-700' : 'text-amber-600'
-                          }
-                        >
-                          {user.isActive ? 'Aktif' : 'Nonaktif'}
-                        </span>
-                      </td>
-                      <td className="py-2 text-right">
-                        <div className="flex flex-wrap justify-end gap-3">
-                          <button onClick={() => showDetail(user)} className="text-blue-600 underline">
-                            Detail
-                          </button>
-                          {has('update:user') && (
-                            <>
-                              <button onClick={() => openEdit(user)} className="text-blue-600 underline">
-                                Edit
-                              </button>
-                              <button
-                                onClick={() => toggleActive(user)}
-                                className="text-amber-600 underline"
-                              >
-                                {user.isActive ? 'Nonaktifkan' : 'Aktifkan'}
-                              </button>
-                            </>
-                          )}
-                          {has('delete:user') && (
-                            <button
-                              onClick={() => requestDelete(user)}
-                              className="text-red-600 underline"
-                            >
-                              Hapus
-                            </button>
+                        <p className="text-xs text-text-muted">{user.email}</p>
+                      </Td>
+                      <Td>
+                        <div className="flex flex-wrap gap-1">
+                          {user.roles.length === 0 ? (
+                            <span className="text-sm text-text-muted">Tanpa role</span>
+                          ) : (
+                            user.roles.map((role) => (
+                              <Badge key={role.id} variant="access">
+                                {role.name}
+                                {role.isSystem ? ' · sistem' : ''}
+                              </Badge>
+                            ))
                           )}
                         </div>
-                      </td>
+                      </Td>
+                      <Td>
+                        <Badge variant={user.isActive ? 'success' : 'warning'}>
+                          {user.isActive ? 'Aktif' : 'Nonaktif'}
+                        </Badge>
+                        {isSelf && (
+                          <p className="mt-1 text-xs text-text-muted">Akun Anda</p>
+                        )}
+                      </Td>
+                      <Td>
+                        <div className="flex items-center justify-end gap-2">
+                          <Button
+                            variant="link"
+                            size="sm"
+                            onClick={() => void showDetail(user)}
+                          >
+                            Detail
+                          </Button>
+                          {has('update:user') && !isSelf && (
+                            <Button
+                              variant="link"
+                              size="sm"
+                              onClick={() => openEdit(user)}
+                            >
+                              Edit
+                            </Button>
+                          )}
+                          {!isSelf && (has('update:user') || has('delete:user')) && (
+                            <details className="relative">
+                              <summary className="cursor-pointer list-none rounded-sm px-2 py-1 text-xs font-medium text-brand-primary hover:underline">
+                                More
+                              </summary>
+                              <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border border-border-subtle bg-surface p-1 shadow-2">
+                                {has('update:user') && (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.currentTarget.closest('details')!.open = false;
+                                      void toggleActive(user);
+                                    }}
+                                    className="block w-full rounded-sm px-2 py-1.5 text-left text-sm text-text-secondary hover:bg-brand-primary-subtle"
+                                  >
+                                    {user.isActive ? 'Nonaktifkan' : 'Aktifkan'}
+                                  </button>
+                                )}
+                                {has('delete:user') && (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.currentTarget.closest('details')!.open = false;
+                                      requestDelete(user);
+                                    }}
+                                    className="block w-full rounded-sm px-2 py-1.5 text-left text-sm text-danger hover:bg-danger-surface"
+                                  >
+                                    Hapus
+                                  </button>
+                                )}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      </Td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-3">
+                  );
+                })}
+              </tbody>
+            </Table>
+            <div className="mt-4">
               <Pagination page={page} limit={10} total={data.total} onPage={setPage} />
             </div>
           </>
         )}
       </div>
+
+      <Drawer
+        open={isFormOpen}
+        onClose={() => setForm(null)}
+        title={editingId ? 'Edit user' : 'User baru'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setForm(null)}>
+              Batal
+            </Button>
+            <Button onClick={() => void submit()} loading={busy}>
+              Simpan
+            </Button>
+          </>
+        }
+      >
+        {form && (
+          <form
+            id="user-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submit();
+            }}
+            className="space-y-4"
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Email" htmlFor="user-email" error={formErrors.email} required>
+                <Input
+                  id="user-email"
+                  type="email"
+                  value={form.email}
+                  disabled={Boolean(editingId)}
+                  invalid={Boolean(formErrors.email)}
+                  onChange={(event) => {
+                    setForm({ ...form, email: event.target.value });
+                    setFormErrors((previous) => ({ ...previous, email: undefined }));
+                  }}
+                />
+              </Field>
+              <Field label="Username (opsional)" htmlFor="user-username">
+                <Input
+                  id="user-username"
+                  value={form.username}
+                  disabled={Boolean(editingId)}
+                  onChange={(event) => setForm({ ...form, username: event.target.value })}
+                />
+              </Field>
+              <Field label="Nama" htmlFor="user-name">
+                <Input
+                  id="user-name"
+                  value={form.name}
+                  onChange={(event) => setForm({ ...form, name: event.target.value })}
+                />
+              </Field>
+              <Field label="Telepon" htmlFor="user-phone">
+                <Input
+                  id="user-phone"
+                  value={form.phone}
+                  onChange={(event) => setForm({ ...form, phone: event.target.value })}
+                />
+              </Field>
+              {!editingId && (
+                <Field label="Password" htmlFor="user-password" error={formErrors.password} required>
+                  <Input
+                    id="user-password"
+                    type="password"
+                    value={form.password}
+                    invalid={Boolean(formErrors.password)}
+                    onChange={(event) => {
+                      setForm({ ...form, password: event.target.value });
+                      setFormErrors((previous) => ({ ...previous, password: undefined }));
+                    }}
+                  />
+                </Field>
+              )}
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-semibold text-text-secondary">Access role</p>
+              <div className="grid max-h-52 gap-2 overflow-y-auto rounded-md border border-border-subtle p-3 sm:grid-cols-2">
+                {roles.length === 0 ? (
+                  <p className="text-sm text-text-muted">Tidak ada role yang dapat dipilih.</p>
+                ) : (
+                  roles.map((role) => (
+                    <Checkbox
+                      key={role.id}
+                      label={role.name}
+                      checked={form.roleIds.includes(role.id)}
+                      onChange={() => toggleRole(role.id)}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+
+            {editingId && (
+              <Checkbox
+                label="Aktif"
+                checked={form.isActive}
+                onChange={(event) => setForm({ ...form, isActive: event.target.checked })}
+              />
+            )}
+          </form>
+        )}
+      </Drawer>
+
+      <Drawer
+        open={Boolean(detail)}
+        onClose={() => setDetail(null)}
+        title="Detail user"
+        footer={
+          <Button variant="secondary" onClick={() => setDetail(null)}>
+            Tutup
+          </Button>
+        }
+      >
+        {detail && (
+          <dl className="grid gap-3 text-sm">
+            <div>
+              <dt className="text-xs text-text-muted">Email</dt>
+              <dd>{detail.email}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Username</dt>
+              <dd>{detail.username}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Nama</dt>
+              <dd>{detail.name ?? '-'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Telepon</dt>
+              <dd>{detail.phone ?? '-'}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Status</dt>
+              <dd>
+                <Badge variant={detail.isActive ? 'success' : 'warning'}>
+                  {detail.isActive ? 'Aktif' : 'Nonaktif'}
+                </Badge>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-text-muted">Access role</dt>
+              <dd className="flex flex-wrap gap-1">
+                {detail.roles.map((role) => (
+                  <Badge key={role.id} variant="access">{role.name}</Badge>
+                ))}
+              </dd>
+            </div>
+          </dl>
+        )}
+      </Drawer>
     </div>
   );
 }

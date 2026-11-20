@@ -5,92 +5,126 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api, setToken } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { apiErrorText } from '@/lib/errors';
+import { Button, Card, Field, Input } from '@/components/ui';
+
+type FieldErrors = { email?: string; password?: string };
 
 export default function LoginPage() {
   const router = useRouter();
   const { refresh } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [apiError, setApiError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  function validate(): string | null {
-    if (!email.trim()) return 'Email wajib diisi';
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
-      return 'Format email tidak valid. Contoh: nama@gmail.com';
+  function validate(): FieldErrors {
+    const next: FieldErrors = {};
+    if (!email.trim()) next.email = 'Email wajib diisi';
+    else if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
+      next.email = 'Format email tidak valid. Contoh: nama@gmail.com';
     }
-    if (!password) return 'Password wajib diisi';
-    return null;
+    if (!password) next.password = 'Password wajib diisi';
+    return next;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const found = validate();
+    setErrors(found);
+    setApiError('');
+    if (Object.keys(found).length > 0) return;
 
-    const problem = validate();
-    if (problem) {
-      setError(problem);
-      return;
-    }
-
-    setError('');
     setLoading(true);
     try {
-      const res = await api<{ accessToken: string }>('/auth/login', {
+      const result = await api<{ accessToken: string }>('/auth/login', {
         method: 'POST',
         body: { email: email.trim(), password },
       });
-      setToken(res.accessToken);
+      setToken(result.accessToken);
       await refresh();
       router.push('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Terjadi kesalahan');
+      // Error remains visible until corrected/dismissed (ADJ-02).
+      setApiError(apiErrorText(err, 'Gagal masuk. Periksa kembali kredensial Anda.'));
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-      <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow text-gray-900">
-        <h1 className="text-2xl font-bold mb-4">Login</h1>
-        <form onSubmit={handleSubmit} noValidate className="space-y-3">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded border border-gray-300 p-2"
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded border border-gray-300 p-2"
-          />
-          {error && (
+    <main className="flex min-h-screen items-center justify-center bg-canvas p-3 sm:p-4">
+      <Card
+        title="Studio Management"
+        description="Masuk ke workspace"
+        className="w-full max-w-[400px] p-6"
+      >
+        <form onSubmit={handleSubmit} noValidate className="mt-5 space-y-3">
+          <Field label="Email" htmlFor="login-email" error={errors.email} required>
+            <Input
+              id="login-email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              invalid={Boolean(errors.email)}
+              aria-describedby={errors.email ? 'login-email-error' : undefined}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setErrors((previous) => ({ ...previous, email: undefined }));
+              }}
+            />
+          </Field>
+
+          <Field
+            label="Password"
+            htmlFor="login-password"
+            error={errors.password}
+            required
+          >
+            <Input
+              id="login-password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              invalid={Boolean(errors.password)}
+              aria-describedby={errors.password ? 'login-password-error' : undefined}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setErrors((previous) => ({ ...previous, password: undefined }));
+              }}
+            />
+          </Field>
+
+          {apiError && (
             <div
               role="alert"
-              className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700"
+              className="rounded-sm border border-danger bg-danger-surface p-3 text-sm text-danger"
             >
-              {error}
+              {apiError}
+              <button
+                type="button"
+                onClick={() => setApiError('')}
+                aria-label="Tutup pesan error"
+                className="ml-2 underline"
+              >
+                Tutup
+              </button>
             </div>
           )}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded bg-blue-600 p-2 text-white disabled:opacity-50"
-          >
+
+          <Button type="submit" loading={loading} className="w-full">
             {loading ? 'Memproses...' : 'Login'}
-          </button>
-          <p className="text-sm text-gray-500">
+          </Button>
+
+          <p className="text-center text-sm text-text-muted">
             Belum punya akun?{' '}
-            <Link href="/register" className="text-blue-600 underline">
+            <Link href="/register" className="text-brand-primary hover:underline">
               Daftar
             </Link>
           </p>
         </form>
-      </div>
+      </Card>
     </main>
   );
 }

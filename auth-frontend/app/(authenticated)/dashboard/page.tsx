@@ -1,79 +1,145 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { apiPage } from '@/lib/api';
+import type { AuditLogView, Page } from '@/lib/api-types';
 import { useAuth } from '@/lib/auth-context';
+import { apiErrorText, handleUnauthorized } from '@/lib/errors';
 import { hasVisibleAccessRoute } from '@/lib/navigation';
+import { Badge, Button, Card, EmptyState, ErrorState, LoadingState } from '@/components/ui';
+import PageHeader from '@/components/page-header';
+import ActivityDetail from '@/components/activity-detail';
 
 export default function DashboardPage() {
-  const { me, loading, error, has } = useAuth();
+  const { me, has } = useAuth();
   const router = useRouter();
+  const [activity, setActivity] = useState<Page<AuditLogView> | null>(null);
+  const [activityError, setActivityError] = useState('');
+  const [selected, setSelected] = useState<AuditLogView | null>(null);
+
+  const canViewActivity = has('read:audit');
+  const canManageAccess = hasVisibleAccessRoute(has);
+
+  const loadActivity = useCallback(async () => {
+    const result = await apiPage<AuditLogView>('/admin/audit-logs?page=1&limit=5');
+    return result;
+  }, []);
 
   useEffect(() => {
-    if (!loading && !me && !error) router.replace('/login');
-  }, [loading, me, error, router]);
+    if (!canViewActivity) return;
+    let active = true;
+    void (async () => {
+      try {
+        const result = await loadActivity();
+        if (active) {
+          setActivity(result);
+          setActivityError('');
+        }
+      } catch (err) {
+        if (!active || handleUnauthorized(err, router)) return;
+        setActivityError(apiErrorText(err, 'Gagal memuat aktivitas.'));
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [canViewActivity, loadActivity, router]);
 
-  if (loading) return <p className="p-6 text-gray-500">Memuat...</p>;
-  if (error) return <p className="p-6 text-red-600">{error}</p>;
   if (!me) return null;
 
-  const roleNames = me.roles?.map((role) => role.name).join(', ');
-  const permissions = me.canonicalPermissions ?? [];
-  const canAdmin = hasVisibleAccessRoute(has);
-
   return (
-    <main className="min-h-screen bg-gray-50 p-4">
-      <div className="mx-auto max-w-xl rounded-xl bg-white p-6 shadow text-gray-900 space-y-4">
-        <h1 className="text-2xl font-semibold text-text-primary">Dashboard</h1>
+    <div className="space-y-6">
+      <PageHeader
+        title={`Selamat datang, ${me.username}`}
+        description="Workspace · ringkasan identitas dan aktivitas terbaru."
+      />
 
-        <div>
-          <p className="text-sm text-gray-500">Email</p>
-          <p>{me.email}</p>
-        </div>
-
-        <div>
-          <p className="text-sm text-gray-500">Role</p>
-          {roleNames ? (
-            <p>{roleNames}</p>
-          ) : (
-            <p className="text-amber-600">
-              Belum ada role. Menunggu admin memberi akses.
-            </p>
-          )}
-        </div>
-
-        <div>
-          <p className="text-sm text-gray-500 mb-1">Permission</p>
-          {permissions.length === 0 ? (
-            <p className="text-gray-400">Tidak ada</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {permissions.map((key) => (
-                <span
-                  key={key}
-                  className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700"
-                >
-                  {key}
+      <Card title="Identitas akun">
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <div>
+            <p className="text-xs text-text-muted">Email</p>
+            <p className="text-sm text-text-primary">{me.email}</p>
+          </div>
+          <div>
+            <p className="text-xs text-text-muted">Access role</p>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {me.roles.length === 0 ? (
+                <span className="text-sm text-text-muted">
+                  Belum ada role. Menunggu admin memberi akses.
                 </span>
-              ))}
+              ) : (
+                me.roles.map((role) => (
+                  <Badge key={role.id} variant="access">
+                    {role.name}
+                    {role.isSystem ? ' · sistem' : ''}
+                  </Badge>
+                ))
+              )}
             </div>
-          )}
+          </div>
         </div>
+      </Card>
 
-        <div className="flex flex-wrap gap-4">
-          {canAdmin && (
-            <Link href="/admin" className="text-blue-600 underline">
-              Buka panel administrasi
-            </Link>
-          )}
-          {has('read:article') && (
-            <Link href="/articles" className="text-blue-600 underline">
-              Buka halaman artikel
-            </Link>
-          )}
-        </div>
-      </div>
-    </main>
+      {canViewActivity && (
+        <Card title="Recent Activity" description="Aktivitas administratif terbaru.">
+          <div className="mt-4">
+            {activityError ? (
+              <ErrorState message={activityError} />
+            ) : !activity ? (
+              <LoadingState label="Memuat aktivitas..." rows={4} />
+            ) : activity.items.length === 0 ? (
+              <EmptyState title="Belum ada aktivitas" text="Belum ada aksi yang tercatat." />
+            ) : (
+              <ul className="divide-y divide-divider rounded-md border border-border-subtle">
+                {activity.items.map((item) => (
+                  <li
+                    key={item.id}
+                    className="flex flex-wrap items-center justify-between gap-2 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm text-text-primary">
+                        <span className="font-medium">{item.actorEmail}</span>{' '}
+                        <span className="font-mono text-xs text-text-secondary">
+                          {item.action}
+                        </span>
+                      </p>
+                      <p className="text-xs text-text-muted">
+                        {new Date(item.createdAt).toLocaleString('id-ID')}
+                      </p>
+                    </div>
+                    <Button variant="link" size="sm" onClick={() => setSelected(item)}>
+                      Lihat
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {(canManageAccess || canViewActivity) && (
+        <Card title="Quick actions">
+          <div className="mt-3 flex flex-wrap gap-2">
+            {canManageAccess && (
+              <Link href="/admin">
+                <Button variant="primary">Kelola akses</Button>
+              </Link>
+            )}
+            {canViewActivity && (
+              <Link href="/admin/audit-logs">
+                <Button variant="secondary">Lihat aktivitas</Button>
+              </Link>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* My Projects is intentionally not rendered (Phase 04 §5.1 / Phase 05 §5.3). */}
+
+      <ActivityDetail log={selected} onClose={() => setSelected(null)} />
+    </div>
   );
 }

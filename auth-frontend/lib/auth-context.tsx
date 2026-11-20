@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useRouter } from 'next/navigation';
@@ -33,6 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const lastRefreshRef = useRef(0);
 
   // Load the session once on mount. State updates happen in async callbacks,
   // so they do not trigger cascading synchronous renders.
@@ -51,6 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       try {
         const data = await fetchMe();
+        lastRefreshRef.current = Date.now();
         if (active) {
           setMe(data);
           setError(null);
@@ -87,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     try {
       const data = await fetchMe();
+      lastRefreshRef.current = Date.now();
       setMe(data);
       setError(null);
     } catch (err) {
@@ -103,6 +107,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
   }, []);
+
+  // Throttled refresh when the tab becomes visible again: role/permission
+  // changes made elsewhere are picked up without creating a refresh loop.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible' || !getToken()) return;
+      if (Date.now() - lastRefreshRef.current < 60_000) return;
+      lastRefreshRef.current = Date.now();
+      void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [refresh]);
 
   const has = useCallback(
     (permission: string) => {
