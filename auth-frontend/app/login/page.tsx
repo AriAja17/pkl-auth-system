@@ -56,6 +56,8 @@ export default function LoginPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-canvas p-3 sm:p-4">
       <Card
+        as="h1"
+        titleSize="page"
         title="Studio Management"
         description="Masuk ke workspace"
         className="w-full max-w-[400px] p-6"
@@ -67,6 +69,7 @@ export default function LoginPage() {
               type="email"
               autoComplete="email"
               value={email}
+              className="h-10"
               invalid={Boolean(errors.email)}
               aria-describedby={errors.email ? 'login-email-error' : undefined}
               onChange={(event) => {
@@ -87,6 +90,7 @@ export default function LoginPage() {
               type="password"
               autoComplete="current-password"
               value={password}
+              className="h-10"
               invalid={Boolean(errors.password)}
               aria-describedby={errors.password ? 'login-password-error' : undefined}
               onChange={(event) => {

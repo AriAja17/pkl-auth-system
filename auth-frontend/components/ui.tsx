@@ -5,6 +5,7 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
@@ -12,6 +13,7 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { cx } from '@/lib/cx';
 
 /* ------------------------------------------------------------------ *
@@ -49,18 +51,22 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   loading?: boolean;
 };
 
-export function Button({
-  variant = 'primary',
-  size = 'md',
-  loading = false,
-  disabled,
-  className,
-  children,
-  type = 'button',
-  ...rest
-}: ButtonProps) {
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  {
+    variant = 'primary',
+    size = 'md',
+    loading = false,
+    disabled,
+    className,
+    children,
+    type = 'button',
+    ...rest
+  },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type={type}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
@@ -81,6 +87,117 @@ export function Button({
       )}
       {children}
     </button>
+  );
+});
+
+/* ------------------------------------------------------------------ *
+ * RowMenu — portal-based so table containers with overflow-x cannot clip it
+ * ------------------------------------------------------------------ */
+
+export type RowMenuItem = {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+};
+
+export function RowMenu({
+  items,
+  label = 'More',
+}: {
+  items: RowMenuItem[];
+  label?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  function show() {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const menuWidth = 176;
+    const estimatedHeight = items.length * 34 + 8;
+    const flip = window.innerHeight - rect.bottom < estimatedHeight + 8;
+    setPosition({
+      top: flip
+        ? Math.max(8, rect.top - estimatedHeight - 4)
+        : rect.bottom + 4,
+      left: Math.max(
+        8,
+        Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8),
+      ),
+    });
+    setOpen(true);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        !menuRef.current?.contains(target) &&
+        !triggerRef.current?.contains(target)
+      ) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <Button
+        ref={triggerRef}
+        variant="link"
+        size="sm"
+        onClick={show}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {label}
+      </Button>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{ top: position.top, left: position.left }}
+            className="fixed z-[55] w-44 rounded-md border border-border-subtle bg-surface p-1 shadow-2"
+          >
+            {items.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  item.onClick();
+                }}
+                className={cx(
+                  'block w-full rounded-sm px-2 py-1.5 text-left text-sm hover:bg-brand-primary-subtle',
+                  item.danger
+                    ? 'text-danger hover:bg-danger-surface'
+                    : 'text-text-secondary',
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -281,16 +398,29 @@ export function Badge({
   );
 }
 
+const CARD_TITLE_SIZES = {
+  page: 'text-page-title',
+  section: 'text-section-title',
+  card: 'text-card-title',
+} as const;
+
 export function Card({
   title,
   description,
+  titleSize = 'section',
+  as = 'h2',
   children,
   className,
   ...rest
 }: HTMLAttributes<HTMLDivElement> & {
   title?: ReactNode;
   description?: ReactNode;
+  /** Visual hierarchy: page = 24px, section = 18px, card = 16px. */
+  titleSize?: keyof typeof CARD_TITLE_SIZES;
+  /** Heading level, so a page can keep exactly one H1. */
+  as?: 'h1' | 'h2' | 'h3';
 }) {
+  const Heading = as;
   return (
     <section
       className={cx(
@@ -300,7 +430,14 @@ export function Card({
       {...rest}
     >
       {title && (
-        <h2 className="text-base font-semibold text-text-primary">{title}</h2>
+        <Heading
+          className={cx(
+            'font-semibold text-text-primary',
+            CARD_TITLE_SIZES[titleSize],
+          )}
+        >
+          {title}
+        </Heading>
       )}
       {description && (
         <p className="mt-1 text-xs text-text-muted">{description}</p>

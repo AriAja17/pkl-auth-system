@@ -17,6 +17,7 @@ import {
   Input,
   LoadingState,
   Pagination,
+  RowMenu,
   Table,
   Td,
   Th,
@@ -343,37 +344,29 @@ export default function UsersPage() {
                             </Button>
                           )}
                           {!isSelf && (has('update:user') || has('delete:user')) && (
-                            <details className="relative">
-                              <summary className="cursor-pointer list-none rounded-sm px-2 py-1 text-xs font-medium text-brand-primary hover:underline">
-                                More
-                              </summary>
-                              <div className="absolute right-0 z-10 mt-1 w-44 rounded-md border border-border-subtle bg-surface p-1 shadow-2">
-                                {has('update:user') && (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.currentTarget.closest('details')!.open = false;
-                                      void toggleActive(user);
-                                    }}
-                                    className="block w-full rounded-sm px-2 py-1.5 text-left text-sm text-text-secondary hover:bg-brand-primary-subtle"
-                                  >
-                                    {user.isActive ? 'Nonaktifkan' : 'Aktifkan'}
-                                  </button>
-                                )}
-                                {has('delete:user') && (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.currentTarget.closest('details')!.open = false;
-                                      requestDelete(user);
-                                    }}
-                                    className="block w-full rounded-sm px-2 py-1.5 text-left text-sm text-danger hover:bg-danger-surface"
-                                  >
-                                    Hapus
-                                  </button>
-                                )}
-                              </div>
-                            </details>
+                            <RowMenu
+                              items={[
+                                ...(has('update:user')
+                                  ? [
+                                      {
+                                        label: user.isActive
+                                          ? 'Nonaktifkan'
+                                          : 'Aktifkan',
+                                        onClick: () => void toggleActive(user),
+                                      },
+                                    ]
+                                  : []),
+                                ...(has('delete:user')
+                                  ? [
+                                      {
+                                        label: 'Hapus',
+                                        onClick: () => requestDelete(user),
+                                        danger: true,
+                                      },
+                                    ]
+                                  : []),
+                              ]}
+                            />
                           )}
                         </div>
                       </Td>

@@ -64,6 +64,8 @@ export default function RegisterPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-canvas p-3 sm:p-4">
       <Card
+        as="h1"
+        titleSize="page"
         title="Daftar"
         description="Akun baru belum punya akses sampai admin memberi role."
         className="w-full max-w-[400px] p-6"
@@ -91,6 +93,7 @@ export default function RegisterPage() {
                 type="email"
                 autoComplete="email"
                 value={email}
+                className="h-10"
                 invalid={Boolean(errors.email)}
                 aria-describedby={errors.email ? 'register-email-error' : undefined}
                 onChange={(event) => {
@@ -109,6 +112,7 @@ export default function RegisterPage() {
               <Input
                 id="register-username"
                 value={username}
+                className="h-10"
                 invalid={Boolean(errors.username)}
                 aria-describedby={errors.username ? 'register-username-error' : undefined}
                 onChange={(event) => {
@@ -129,6 +133,7 @@ export default function RegisterPage() {
                 type="password"
                 autoComplete="new-password"
                 value={password}
+                className="h-10"
                 invalid={Boolean(errors.password)}
                 aria-describedby={errors.password ? 'register-password-error' : undefined}
                 onChange={(event) => {

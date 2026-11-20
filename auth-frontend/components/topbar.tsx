@@ -7,6 +7,8 @@ import { Badge, Button } from '@/components/ui';
 export type TopbarProps = {
   email: string;
   roles: RoleView[];
+  /** Current page label from the navigation registry; shown on small screens. */
+  pageTitle: string;
   onLogout: () => void;
   onToggleSidebar: () => void;
   sidebarOpen: boolean;
@@ -16,6 +18,7 @@ export type TopbarProps = {
 export default function Topbar({
   email,
   roles,
+  pageTitle,
   onLogout,
   onToggleSidebar,
   sidebarOpen,
@@ -59,7 +62,10 @@ export default function Topbar({
             <path strokeLinecap="round" d="M4 7h16M4 12h16M4 17h16" />
           </svg>
         </button>
-        <span className="truncate text-sm font-semibold text-text-primary">
+        <span className="truncate text-sm font-semibold text-text-primary md:hidden">
+          {pageTitle}
+        </span>
+        <span className="hidden truncate text-sm font-semibold text-text-primary md:inline">
           Workspace
         </span>
       </div>

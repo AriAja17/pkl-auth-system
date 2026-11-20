@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { buildNavigation } from '@/lib/navigation';
+import { breadcrumbFor, buildNavigation } from '@/lib/navigation';
 import Topbar from './topbar';
 import Sidebar from './sidebar';
 import Breadcrumb from './breadcrumb';
@@ -70,6 +70,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const groups = buildNavigation(me.menus ?? [], has);
+  const crumbs = breadcrumbFor(pathname);
+  const pageTitle = crumbs[crumbs.length - 1]?.label ?? 'Workspace';
 
   const sidebar = (
     <Sidebar
@@ -84,6 +86,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <Topbar
         email={me.email}
         roles={me.roles ?? []}
+        pageTitle={pageTitle}
         onLogout={logout}
         onToggleSidebar={toggleSidebar}
         sidebarOpen={open}
