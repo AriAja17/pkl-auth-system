@@ -58,13 +58,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (error || !me) {
+  // A missing session is a normal redirect, not an error the user must act on.
+  if (error) {
     return (
       <div className="mx-auto w-full max-w-lg p-6">
-        <ErrorState
-          message={error ?? 'Sesi tidak ditemukan. Silakan masuk kembali.'}
-          onRetry={() => void refresh()}
-        />
+        <ErrorState message={error} onRetry={() => void refresh()} />
+      </div>
+    );
+  }
+  if (!me) {
+    return (
+      <div className="mx-auto w-full max-w-lg">
+        <LoadingState label="Mengarahkan ke halaman masuk..." rows={2} />
       </div>
     );
   }

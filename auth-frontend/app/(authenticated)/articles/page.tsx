@@ -3,129 +3,171 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { api, ApiError } from '@/lib/api';
+import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
+import { apiErrorText, handleUnauthorized } from '@/lib/errors';
+import {
+  Button,
+  Card,
+  ConfirmDialog,
+  Drawer,
+  EmptyState,
+  ErrorState,
+  Field,
+  Input,
+  LoadingState,
+  Textarea,
+  Toast,
+  type ToastState,
+} from '@/components/ui';
+import PageHeader from '@/components/page-header';
 
 type Article = { id: string; title: string; content: string; createdAt: string };
-type Toast = { type: 'ok' | 'error'; text: string };
+type FormState = { title: string; content: string };
+type FieldErrors = { title?: string; content?: string };
+type ConfirmState = {
+  title: string;
+  text: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => void;
+};
+
+const emptyForm: FormState = { title: '', content: '' };
 
 export default function ArticlesPage() {
   const { me, has, loading, error } = useAuth();
   const router = useRouter();
-  const [articles, setArticles] = useState<Article[]>([]);
-  const [toast, setToast] = useState<Toast | null>(null);
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
+  const [articles, setArticles] = useState<Article[] | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [form, setForm] = useState<FormState | null>(null);
+  const [formErrors, setFormErrors] = useState<FieldErrors>({});
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<ConfirmState | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const canRead = has('read:article');
+  const canCreate = has('create:article');
+  const canUpdate = has('update:article');
+  const canDelete = has('delete:article');
+
   const loadArticles = useCallback(async () => {
-    setArticles(await api<Article[]>('/articles'));
+    const result = await api<Article[]>('/articles');
+    setArticles(result);
+    setLoadError('');
   }, []);
-  
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(null), 4000);
-    return () => clearTimeout(timer);
-  }, [toast]);
 
   // Session is loaded once by AuthProvider; no duplicate /auth/me call here.
   useEffect(() => {
-    if (!me || !has('read:article')) return;
+    if (loading || !me || !canRead) return;
     let active = true;
     void (async () => {
       try {
         const result = await api<Article[]>('/articles');
-        if (active) setArticles(result);
+        if (active) {
+          setArticles(result);
+          setLoadError('');
+        }
       } catch (err) {
-        if (active) handleError(err);
+        if (!active || handleUnauthorized(err, router)) return;
+        setLoadError(apiErrorText(err, 'Gagal memuat artikel.'));
       }
     })();
     return () => {
       active = false;
     };
-  }, [me, has]);
+  }, [loading, me, canRead, router]);
 
   useEffect(() => {
     if (!loading && !me && !error) router.replace('/login');
   }, [loading, me, error, router]);
 
-  function handleError(err: unknown) {
-    if (err instanceof ApiError && err.status === 403) {
-      setToast({ type: 'error', text: 'Anda tidak punya izin untuk aksi ini' });
-      return;
-    }
-    setToast({
-      type: 'error',
-      text: err instanceof Error ? err.message : 'Terjadi kesalahan',
-    });
-  }
-
-  function resetForm() {
-    setTitle('');
-    setContent('');
+  function openCreate() {
     setEditingId(null);
+    setFormErrors({});
+    setForm({ ...emptyForm });
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!title.trim() || !content.trim()) {
-      setToast({ type: 'error', text: 'Judul dan isi artikel wajib diisi' });
-      return;
-    }
+  function startEdit(article: Article) {
+    setEditingId(article.id);
+    setFormErrors({});
+    setForm({ title: article.title, content: article.content });
+  }
+
+  function reportError(err: unknown) {
+    if (handleUnauthorized(err, router)) return;
+    setToast({ type: 'error', text: apiErrorText(err) });
+  }
+
+  async function submit() {
+    if (!form) return;
+    const found: FieldErrors = {};
+    if (!form.title.trim()) found.title = 'Judul wajib diisi';
+    if (!form.content.trim()) found.content = 'Isi artikel wajib diisi';
+    setFormErrors(found);
+    if (Object.keys(found).length > 0) return;
 
     setSaving(true);
     try {
       if (editingId) {
         await api(`/articles/${editingId}`, {
           method: 'PUT',
-          body: { title, content },
+          body: { title: form.title, content: form.content },
         });
       } else {
-        await api('/articles', { method: 'POST', body: { title, content } });
+        await api('/articles', {
+          method: 'POST',
+          body: { title: form.title, content: form.content },
+        });
       }
-      const wasEditing = editingId !== null;
-      resetForm();
-      await loadArticles();
       setToast({
         type: 'ok',
-        text: wasEditing ? 'Artikel berhasil diubah' : 'Artikel berhasil dibuat',
+        text: editingId
+          ? 'Artikel berhasil diubah'
+          : 'Artikel berhasil dibuat',
       });
+      setForm(null);
+      setEditingId(null);
+      await loadArticles();
     } catch (err) {
-      handleError(err);
+      reportError(err);
     } finally {
       setSaving(false);
     }
   }
 
-  function startEdit(article: Article) {
-    setEditingId(article.id);
-    setTitle(article.title);
-    setContent(article.content);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  function requestDelete(article: Article) {
+    setDialog({
+      title: 'Hapus artikel?',
+      text: `Artikel "${article.title}" akan dihapus permanen.`,
+      confirmLabel: 'Ya, hapus',
+      danger: true,
+      onConfirm: () => {
+        setDialog(null);
+        void (async () => {
+          try {
+            await api(`/articles/${article.id}`, { method: 'DELETE' });
+            setToast({ type: 'ok', text: 'Artikel berhasil dihapus' });
+            await loadArticles();
+          } catch (err) {
+            reportError(err);
+          }
+        })();
+      },
+    });
   }
 
-  async function removeArticle(article: Article) {
-    if (!window.confirm(`Hapus artikel "${article.title}"?`)) return;
-    try {
-      await api(`/articles/${article.id}`, { method: 'DELETE' });
-      if (editingId === article.id) resetForm();
-      await loadArticles();
-      setToast({ type: 'ok', text: 'Artikel berhasil dihapus' });
-    } catch (err) {
-      handleError(err);
-    }
+  if (loading) {
+    return <LoadingState label="Memuat sesi..." rows={3} />;
   }
-
-  if (loading) return <p className="p-6 text-gray-500">Memuat...</p>;
-  if (error) return <p className="p-6 text-red-600">{error}</p>;
-  if (!me) return null;
-
-  const canRead = me.canonicalPermissions.includes('read:article');
-  const canCreate = me.canonicalPermissions.includes('create:article');
-  const canUpdate = me.canonicalPermissions.includes('update:article');
-  const canDelete = me.canonicalPermissions.includes('delete:article');
-  const showForm = editingId ? canUpdate : canCreate;
+  if (error || !me) {
+    return (
+      <ErrorState
+        message={error ?? 'Sesi tidak ditemukan. Silakan masuk kembali.'}
+      />
+    );
+  }
 
   const abilities = [
     canRead && 'melihat',
@@ -137,130 +179,120 @@ export default function ArticlesPage() {
     .join(', ');
 
   return (
-    <main className="min-h-screen bg-gray-50 p-4 text-gray-900">
-      {toast && (
-        <div
-          role="status"
-          className={`fixed right-4 top-4 z-50 flex max-w-sm items-start gap-3 rounded-lg px-4 py-3 text-sm text-white shadow-lg ${
-            toast.type === 'ok' ? 'bg-green-600' : 'bg-red-600'
-          }`}
-        >
-          <span className="font-bold">
-            {toast.type === 'ok' ? 'Berhasil' : 'Gagal'}
-          </span>
-          <span className="flex-1">{toast.text}</span>
-          <button onClick={() => setToast(null)} aria-label="Tutup">
-            x
-          </button>
+    <div className="space-y-4">
+      <Toast toast={toast} onClose={() => setToast(null)} />
+      {dialog && <ConfirmDialog {...dialog} onCancel={() => setDialog(null)} />}
+
+      <PageHeader
+        title="Artikel"
+        description={
+          <>
+            {abilities ? `Izinmu: ${abilities}. ` : ''}
+            Halaman contoh konten dengan permission kanonik.
+          </>
+        }
+        action={
+          <div className="flex flex-wrap gap-2">
+            <Link href="/dashboard">
+              <Button variant="secondary">Dashboard</Button>
+            </Link>
+            {canCreate && <Button onClick={openCreate}>Tulis artikel</Button>}
+          </div>
+        }
+      />
+
+      {!canRead ? (
+        <EmptyState
+          title="Tidak ada akses"
+          text="Role kamu belum punya izin untuk melihat artikel. Minta admin memberi akses."
+        />
+      ) : loadError ? (
+        <ErrorState message={loadError} />
+      ) : articles === null ? (
+        <LoadingState rows={3} />
+      ) : articles.length === 0 ? (
+        <EmptyState title="Belum ada artikel" text="Belum ada konten yang dibuat." />
+      ) : (
+        <div className="grid gap-3 lg:grid-cols-2">
+          {articles.map((article) => (
+            <Card
+              key={article.id}
+              title={article.title}
+              description={new Date(article.createdAt).toLocaleString('id-ID')}
+              titleSize="card"
+            >
+              <p className="mt-3 whitespace-pre-wrap text-sm text-text-secondary">
+                {article.content}
+              </p>
+              {(canUpdate || canDelete) && (
+                <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-divider pt-3">
+                  {canUpdate && (
+                    <Button variant="link" size="sm" onClick={() => startEdit(article)}>
+                      Edit
+                    </Button>
+                  )}
+                  {canDelete && (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="text-danger"
+                      onClick={() => requestDelete(article)}
+                    >
+                      Hapus
+                    </Button>
+                  )}
+                </div>
+              )}
+            </Card>
+          ))}
         </div>
       )}
 
-      <div className="mx-auto max-w-2xl space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Artikel</h1>
-          <Link href="/dashboard" className="text-sm text-blue-600 underline">
-            Kembali ke dashboard
-          </Link>
-        </div>
-
-        {abilities && (
-          <p className="text-sm text-gray-500">
-            Izinmu di halaman ini: {abilities}.
-          </p>
-        )}
-
-        {!canRead ? (
-          <div className="rounded border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
-            Role kamu belum punya izin untuk melihat artikel. Minta admin
-            memberi akses.
-          </div>
-        ) : (
+      <Drawer
+        open={Boolean(form)}
+        onClose={() => setForm(null)}
+        title={editingId ? 'Edit artikel' : 'Artikel baru'}
+        footer={
           <>
-            {showForm && (
-              <form
-                onSubmit={handleSubmit}
-                noValidate
-                className="space-y-3 rounded-xl bg-white p-4 shadow"
-              >
-                <h2 className="font-semibold">
-                  {editingId ? 'Edit artikel' : 'Tulis artikel baru'}
-                </h2>
-                <input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Judul"
-                  className="w-full rounded border border-gray-300 p-2"
-                />
-                <textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="Isi artikel"
-                  rows={4}
-                  className="w-full rounded border border-gray-300 p-2"
-                />
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
-                  >
-                    {saving
-                      ? 'Menyimpan...'
-                      : editingId
-                        ? 'Simpan perubahan'
-                        : 'Simpan'}
-                  </button>
-                  {editingId && (
-                    <button
-                      type="button"
-                      onClick={resetForm}
-                      className="rounded border border-gray-300 px-3 py-1 text-sm"
-                    >
-                      Batal
-                    </button>
-                  )}
-                </div>
-              </form>
-            )}
-
-            {articles.length === 0 ? (
-              <p className="rounded-xl bg-white p-4 text-sm text-gray-500 shadow">
-                Belum ada artikel.
-              </p>
-            ) : (
-              articles.map((a) => (
-                <article key={a.id} className="rounded-xl bg-white p-4 shadow">
-                  <h3 className="text-lg font-semibold">{a.title}</h3>
-                  <p className="text-xs text-gray-400">
-                    {new Date(a.createdAt).toLocaleString('id-ID')}
-                  </p>
-                  <p className="mt-2 whitespace-pre-wrap text-sm">{a.content}</p>
-                  {(canUpdate || canDelete) && (
-                    <div className="mt-3 flex gap-4 text-sm">
-                      {canUpdate && (
-                        <button
-                          onClick={() => startEdit(a)}
-                          className="text-blue-600 underline"
-                        >
-                          Edit
-                        </button>
-                      )}
-                      {canDelete && (
-                        <button
-                          onClick={() => removeArticle(a)}
-                          className="text-red-600 underline"
-                        >
-                          Hapus
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </article>
-              ))
-            )}
+            <Button variant="secondary" onClick={() => setForm(null)}>
+              Batal
+            </Button>
+            <Button onClick={() => void submit()} loading={saving}>
+              Simpan
+            </Button>
           </>
+        }
+      >
+        {form && (
+          <div className="space-y-4">
+            <Field label="Judul" htmlFor="article-title" error={formErrors.title} required>
+              <Input
+                id="article-title"
+                value={form.title}
+                invalid={Boolean(formErrors.title)}
+                aria-describedby={formErrors.title ? 'article-title-error' : undefined}
+                onChange={(event) => {
+                  setForm({ ...form, title: event.target.value });
+                  setFormErrors((previous) => ({ ...previous, title: undefined }));
+                }}
+              />
+            </Field>
+            <Field label="Isi artikel" htmlFor="article-content" error={formErrors.content} required>
+              <Textarea
+                id="article-content"
+                rows={6}
+                value={form.content}
+                invalid={Boolean(formErrors.content)}
+                aria-describedby={formErrors.content ? 'article-content-error' : undefined}
+                onChange={(event) => {
+                  setForm({ ...form, content: event.target.value });
+                  setFormErrors((previous) => ({ ...previous, content: undefined }));
+                }}
+              />
+            </Field>
+          </div>
         )}
-      </div>
-    </main>
+      </Drawer>
+    </div>
   );
 }
