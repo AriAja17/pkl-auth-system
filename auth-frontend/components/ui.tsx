@@ -147,11 +147,16 @@ export function RowMenu({
         triggerRef.current?.focus();
       }
     };
+    // The popover is position:fixed, so it would otherwise stay behind while
+    // the page scrolls. Close it on scroll for predictable behaviour.
+    const onScroll = () => setOpen(false);
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onScroll, true);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onScroll, true);
     };
   }, [open]);
 

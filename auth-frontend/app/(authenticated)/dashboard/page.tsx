@@ -47,6 +47,17 @@ export default function DashboardPage() {
     };
   }, [canViewActivity, loadActivity, router]);
 
+  async function retryActivity() {
+    setActivity(null);
+    setActivityError('');
+    try {
+      setActivity(await loadActivity());
+    } catch (err) {
+      if (handleUnauthorized(err, router)) return;
+      setActivityError(apiErrorText(err, 'Gagal memuat aktivitas.'));
+    }
+  }
+
   if (!me) return null;
 
   return (
@@ -86,7 +97,10 @@ export default function DashboardPage() {
         <Card title="Recent Activity" description="Aktivitas administratif terbaru.">
           <div className="mt-4">
             {activityError ? (
-              <ErrorState message={activityError} />
+              <ErrorState
+                message={activityError}
+                onRetry={() => void retryActivity()}
+              />
             ) : !activity ? (
               <LoadingState label="Memuat aktivitas..." rows={4} />
             ) : activity.items.length === 0 ? (

@@ -106,7 +106,7 @@ export default function AuditLogsPage() {
             setPage(1);
             setFilters(draft);
           }}
-          className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+          className="mb-4 grid gap-2 sm:grid-cols-3"
         >
           <Field label="Action" htmlFor="filter-action">
             <Input
@@ -157,7 +157,7 @@ export default function AuditLogsPage() {
               onChange={(event) => setDraft({ ...draft, to: event.target.value })}
             />
           </Field>
-          <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-3">
+          <div className="flex items-end gap-2 sm:col-span-3">
             <Button type="submit">Filter</Button>
             <Button
               type="button"
