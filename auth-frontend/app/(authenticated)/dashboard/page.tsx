@@ -4,19 +4,10 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-
-const ADMIN_KEYS = [
-  'read:user',
-  'read:role',
-  'read:permission',
-  'read:menu',
-  'read:delegation',
-  'read:audit',
-  'manage:user',
-];
+import { hasVisibleAccessRoute } from '@/lib/navigation';
 
 export default function DashboardPage() {
-  const { me, loading, error, has, logout } = useAuth();
+  const { me, loading, error, has } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -29,17 +20,12 @@ export default function DashboardPage() {
 
   const roleNames = me.roles?.map((role) => role.name).join(', ');
   const permissions = me.canonicalPermissions ?? [];
-  const canAdmin = ADMIN_KEYS.some((key) => has(key));
+  const canAdmin = hasVisibleAccessRoute(has);
 
   return (
     <main className="min-h-screen bg-gray-50 p-4">
       <div className="mx-auto max-w-xl rounded-xl bg-white p-6 shadow text-gray-900 space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Dashboard</h1>
-          <button onClick={logout} className="text-sm text-red-600 underline">
-            Logout
-          </button>
-        </div>
+        <h1 className="text-2xl font-semibold text-text-primary">Dashboard</h1>
 
         <div>
           <p className="text-sm text-gray-500">Email</p>

@@ -1,26 +1,129 @@
 @import "tailwindcss";
 
+/*
+ * Approved design tokens (Phase 03 §12, Phase 05 §3.2).
+ * Single source of truth: declaring them in @theme exposes both CSS variables
+ * and Tailwind utilities (bg-canvas, text-text-secondary, border-border-strong,
+ * outline-focus, shadow-2, ...). No duplicate :root definitions.
+ *
+ * Spacing uses Tailwind's built-in 4px base scale:
+ * 1=4px, 2=8px, 3=12px, 4=16px, 5=20px, 6=24px, 8=32px.
+ * Radius already matches the approved scale: sm=4px, md=6px, lg=8px.
+ * Light mode only — dark mode is intentionally not implemented in Batch 01.
+ * ADJ-01: --color-text-secondary is the only secondary text token.
+ */
+@theme {
+  /* Brand */
+  --color-brand-primary: #3357a8;
+  --color-brand-primary-hover: #2a4789;
+  --color-brand-primary-active: #213a70;
+  --color-brand-primary-subtle: #eef2fb;
+  --color-brand-primary-subtle-hover: #e4eaf8;
+  --color-brand-secondary-subtle: #f0f2f5;
+
+  /* Surfaces */
+  --color-canvas: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f8f9fb;
+
+  /* Borders */
+  --color-border-subtle: #e3e6eb;
+  --color-border-strong: #838e9f;
+  --color-border-discipline: #c9cfd8;
+  --color-border-access: #c9d6f0;
+  --color-divider: #eceef2;
+
+  /* Text */
+  --color-text-primary: #1b2230;
+  --color-text-secondary: #4a5568;
+  --color-text-muted: #646d7d;
+  --color-text-on-brand: #ffffff;
+
+  /* Interactive */
+  --color-focus: #2f6fed;
+  --color-interactive-hover: #edf1fa;
+
+  /* Status */
+  --color-success: #1f7a4d;
+  --color-success-surface: #e7f4ec;
+  --color-warning: #9a6200;
+  --color-warning-surface: #fdf3df;
+  --color-danger: #b32d33;
+  --color-danger-surface: #fcebec;
+  --color-info: #0f6e73;
+  --color-info-surface: #e6f4f4;
+
+  /* Disabled / overlay */
+  --color-disabled-surface: #eceff3;
+  --color-disabled-text: #7a8494;
+  --color-overlay: rgb(17 24 39 / 48%);
+
+  /* Typography */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, sfmono-regular, monospace;
+
+  --text-page-title: 1.5rem;
+  --text-page-title--line-height: 2rem;
+  --text-section-title: 1.125rem;
+  --text-section-title--line-height: 1.625rem;
+  --text-card-title: 1rem;
+  --text-card-title--line-height: 1.5rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.375rem;
+  --text-helper: 0.75rem;
+  --text-helper--line-height: 1.125rem;
+  --text-table-head: 0.75rem;
+  --text-table-head--line-height: 1rem;
+  --text-mono: 0.75rem;
+  --text-mono--line-height: 1.125rem;
+
+  /* Elevation */
+  --shadow-1: 0 1px 2px rgb(27 34 48 / 6%);
+  --shadow-2: 0 8px 24px rgb(27 34 48 / 12%);
+  --shadow-toast: 0 4px 12px rgb(27 34 48 / 10%);
+
+  /* Layout */
+  --layout-sidebar: 240px;
+  --layout-sidebar-mobile: 280px;
+  --layout-topbar: 56px;
+  --layout-content-max: 1280px;
+
+  /* Motion */
+  --motion-duration-fast: 120ms;
+  --motion-duration: 160ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0.2, 1);
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-canvas);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+code,
+pre,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
