@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <link rel="icon" href="data:," />
+  <title>Studio Management — High-Fidelity Design Prototype</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="prototype-banner" role="note">
+    <strong>DESIGN PROTOTYPE</strong>
+    <span>Simulasi UI/UX — mock data, bukan aplikasi produksi. Fitur berlabel <span class="badge badge-info">PLANNED</span> belum tersedia di aplikasi.</span>
+  </div>
+
+  <!-- AUTHENTICATION -->
+  <div id="auth-root"></div>
+
+  <!-- AUTHENTICATED SHELL -->
+  <div id="app-root" hidden>
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="icon-btn mobile-only" id="menu-toggle" aria-label="Buka navigasi" aria-expanded="false">☰</button>
+        <span class="workspace-label">Workspace</span>
+        <button class="context-btn" type="button" disabled title="Project context tersedia setelah Projects diimplementasikan">
+          Project context <span aria-hidden="true">▾</span>
+        </button>
+      </div>
+      <div class="topbar-right">
+        <div class="prototype-controls" aria-label="Kontrol prototype">
+          <button class="control-btn" id="toggle-catalog" type="button" aria-pressed="false">Simulasikan katalog gagal</button>
+          <button class="control-btn" id="toggle-actor" type="button" aria-pressed="false">Actor: superadmin</button>
+        </div>
+        <div class="profile-wrap">
+          <button class="profile-btn" id="profile-btn" type="button" aria-haspopup="true" aria-expanded="false">
+            <span class="avatar" id="profile-avatar">A</span>
+            <span class="profile-name" id="profile-name">Ari</span>
+            <span aria-hidden="true">▾</span>
+          </button>
+          <div class="profile-menu" id="profile-menu" hidden>
+            <p class="profile-email" id="profile-email">ari@studio.local</p>
+            <div id="profile-roles" class="profile-roles"></div>
+            <button class="menu-item" type="button" data-action="logout">Logout</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="shell-body">
+      <aside class="sidebar" id="sidebar" aria-label="Navigasi utama"></aside>
+      <div class="scrim" id="sidebar-scrim" hidden></div>
+      <main class="main" id="main">
+        <nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb"></nav>
+        <div id="page-root"></div>
+      </main>
+    </div>
+  </div>
+
+  <div id="drawer-root"></div>
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
