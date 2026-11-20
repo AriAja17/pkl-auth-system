@@ -159,7 +159,8 @@ cp .env.example .env
 Isi konfigurasi `.env`:
 
 ```env
-DATABASE_URL="postgresql://postgres:PASSWORD@db.xxxxx.supabase.co:5432/postgres"
+DATABASE_URL="postgresql://postgres:PASSWORD@db.xxxxx.supabase.co:6543/postgres"
+DIRECT_URL="postgresql://postgres:PASSWORD@db.xxxxx.supabase.co:5432/postgres"
 JWT_SECRET="isi-dengan-string-acak-yang-panjang"
 ADMIN_EMAIL="admin@contoh.com"
 ADMIN_PASSWORD="ganti-dengan-password-kuat"
@@ -171,7 +172,8 @@ AUTH_LOGIN_RATE_TTL_MS=900000
 
 | Variabel | Fungsi |
 |---|---|
-| `DATABASE_URL` | Connection string database PostgreSQL |
+| `DATABASE_URL` | Connection string runtime lewat Supabase PgBouncer (port 6543) |
+| `DIRECT_URL` | Connection string direct (port 5432), dipakai `prisma migrate` |
 | `JWT_SECRET` | Kunci rahasia untuk menandatangani JWT |
 | `ADMIN_EMAIL` | Email akun superadmin pertama (dipakai seed) |
 | `ADMIN_PASSWORD` | Password akun superadmin pertama (dipakai seed) |
